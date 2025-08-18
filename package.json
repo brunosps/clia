@@ -1,0 +1,30 @@
+{
+  "name": "clia",
+  "version": "0.2.0",
+  "type": "module",
+  "bin": {
+    "clia": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "dev": "tsc -w -p .",
+    "start": "node dist/index.js",
+    "rag:index": "node dist/index.js rag index",
+    "rag:query": "node dist/index.js rag query --q \"test\""
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.60.0",
+    "@xenova/transformers": "^2.16.1",
+    "commander": "^12.0.0",
+    "execa": "^9.4.0",
+    "glob": "^11.0.3",
+    "hnswlib-node": "^2.1.0",
+    "langchain": "^0.2.12",
+    "node-fetch": "^3.3.2",
+    "simple-git": "^3.27.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "typescript": "^5.5.4"
+  }
+}
