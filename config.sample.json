@@ -1,0 +1,85 @@
+{
+  "language": "en-US",
+  "translateReports": true,
+  "project": {
+    "name": "MeuProjeto",
+    "instructionsDir": ".github/instructions",
+    "useRag": true,
+    "rag": {
+      "includes": ["src", "docs", "README.md", ".github/instructions"],
+      "excludes": ["**/node_modules/**", "**/.next/**", "**/dist/**", "**/build/**", "**/.git/**", "**/.clia/**"],
+      "chunkSize": 1000,
+      "chunkOverlap": 150,
+      "embeddings": "auto"
+    }
+  },
+  "llm": {
+    "providers": {
+      "openai": { 
+        "apiKeyEnv": "OPENAI_API_KEY", 
+        "endpoint": "https://api.openai.com/v1" 
+      },
+      "deepseek": { 
+        "apiKeyEnv": "DEEPSEEK_API_KEY", 
+        "endpoint": "https://api.deepseek.com/v1" 
+      },
+      "anthropic": { 
+        "apiKeyEnv": "ANTHROPIC_API_KEY", 
+        "endpoint": "https://api.anthropic.com" 
+      },
+      "azureOpenAI": {
+        "apiKeyEnv": "AZURE_OPENAI_API_KEY",
+        "endpointEnv": "AZURE_OPENAI_ENDPOINT",
+        "apiVersion": "2024-02-15-preview",
+        "deployments": {
+          "basic": "gpt-4o-mini",
+          "default": "gpt-4o",
+          "premium": "gpt-4o",
+          "embed": "text-embedding-3-small"
+        }
+      },
+      "openrouter": {
+        "apiKeyEnv": "OPENROUTER_API_KEY",
+        "endpoint": "https://openrouter.ai/api/v1"
+      },
+      "abacus": {
+        "apiKeyEnv": "ABACUS_API_KEY",
+        "endpoint": "https://api.abacus.ai/api/v1"
+      }
+    },
+    "tiers": {
+      "basic": { "provider": "deepseek", "model": "deepseek-chat" },
+      "default": { "provider": "openai", "model": "gpt-4o-mini" },
+      "premium": { "provider": "openai", "model": "gpt-4o" },
+      "embed": { "provider": "openai", "model": "text-embedding-3-small" }
+    }
+  },
+  "logging": {
+    "level": "info",
+    "maxFileSize": 10,
+    "maxFiles": 5,
+    "datePattern": "YYYY-MM-DD",
+    "enableConsole": true
+  },
+  "reports": {
+    "enabled": true,
+    "outputDir": ".clia/reports",
+    "formats": ["json", "markdown"],
+    "autoSave": true,
+    "keepHistory": 10
+  },
+  "mcp": {
+    "enabled": true,
+    "servers": {
+      "filesystem": "mcp+local://filesystem",
+      "git": "mcp+local://git",
+      "fetch": "mcp+local://fetch",
+      "stack-detector": "mcp+local://stack-detector",
+      "context7": "https://mcp.context7.com/mcp",
+      "stackoverflow": "mcp+community://stackoverflow",
+      "github": "npx @modelcontextprotocol/server-github",
+      "semgrep": "mcp+local://semgrep",
+      "trivy": "mcp+local://trivy"
+    }
+  }
+}
