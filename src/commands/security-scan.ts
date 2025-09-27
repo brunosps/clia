@@ -59,45 +59,25 @@ export function securityScanCommand(): Command {
   const command = new Command('security-scan');
 
   command
-    .description(
-      `
-🛡️ Security Analysis v1.0.0
-
-Intelligent security vulnerability detection system with MCP integration
-following Standard Command Structure v1.0.0.
-
-Features:
-  • Static code analysis for security vulnerabilities
-  • MCP integration for Semgrep and Trivy scanners
-  • Dependency vulnerability detection
-  • AI-powered security recommendations
-  • Multi-format reporting (JSON, Markdown)
-  • Severity filtering and data optimization
-
-Examples:
-  clia security-scan                     # Basic security analysis
-  clia security-scan --trivy             # Include dependency scan
-  clia security-scan --format json       # JSON output
-  clia security-scan -o report.md        # Custom output file`
-    )
+    .description('Security vulnerability detection with MCP integration for Semgrep and Trivy scanners')
     .option(
       '-t, --target <path>',
-      '📁 Target directory (default: current project)',
+      'Target directory (default: current project)',
       '.'
     )
-    .option('-o, --output <file>', '📄 Output file path')
+    .option('-o, --output <file>', 'Output file path')
     .option(
       '-s, --severity <level>',
-      '⚠️ Minimum severity: low|medium|high|critical',
+      'Minimum severity: low|medium|high|critical',
       'medium'
     )
     .option(
       '-f, --format <format>',
-      '📋 Output format: json|markdown',
+      'Output format: json|markdown',
       'markdown'
     )
-    .option('--include-tests', '🧪 Include test files in analysis', false)
-    .option('--trivy', '📦 Enable Trivy scanner for dependencies', false)
+    .option('--include-tests', 'Include test files in analysis', false)
+    .option('--trivy', 'Enable Trivy scanner for dependencies', false)
     .action(async (options) => {
       const logger = getLogger();
       try {
@@ -106,7 +86,8 @@ Examples:
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
-        logger.error(`❌ Security scan failed: ${errorMessage}`);
+        logger.error(`Security scan failed: ${errorMessage}`);
+        console.log(`Security scan failed: ${errorMessage}`);
         process.exit(1);
       }
     });
@@ -120,9 +101,7 @@ async function processSecurityScanOperation(
   const config = await loadConfig();
   const logger = getLogger();
 
-  logger.info(
-    '🛡️ Starting security analysis with Standard Command Structure v1.0.0'
-  );
+  logger.info('Starting security analysis');
 
   const [mcpContext, securityContext] = await Promise.all([
     collectMCPSecurityData(options),
@@ -167,35 +146,34 @@ async function processSecurityScanOperation(
   };
 
   logger.info(
-    `🎯 Processing ${semgrepFindings + trivyVulns + trivyMisconfigs} total security findings`
+    `Processing ${semgrepFindings + trivyVulns + trivyMisconfigs} total security findings`
   );
 
   const result = await execPrompt<PromptContext, SecurityResponse>(
-    'security-scan/system',
+    'security-scan',
     promptContext,
     '1.0.0',
     'default',
-    0.5,
-    3
+    0.3
   );
 
   await saveResults(result, config, options, logger);
 
-  logger.info('✅ Security analysis completed successfully');
+  logger.info('Security analysis completed successfully');
 }
 
 async function collectSecurityRelevantData(): Promise<{
-  configFiles: any[];
+  configFiles: string[];
   securityIssues: string[];
-  vulnerableDependencies: any[];
-  architecture: any;
+  vulnerableDependencies: Record<string, unknown>[];
+  architecture: Record<string, unknown>;
 }> {
   const logger = getLogger();
   const securityData = {
-    configFiles: [] as any[],
+    configFiles: [] as string[],
     securityIssues: [] as string[],
-    vulnerableDependencies: [] as any[],
-    architecture: {},
+    vulnerableDependencies: [] as Record<string, unknown>[],
+    architecture: {} as Record<string, unknown>,
   };
 
   try {
@@ -244,22 +222,21 @@ async function collectSecurityRelevantData(): Promise<{
 
       if (stack.analysis_result?.recommendations?.security?.length > 0) {
         securityData.securityIssues.push(
-          ...stack.analysis_result.recommendations.security.map((rec: any) =>
+          ...stack.analysis_result.recommendations.security.map((rec: unknown) =>
             typeof rec === 'string'
               ? rec
-              : rec.solution || rec.issue || JSON.stringify(rec)
+              : (rec as Record<string, unknown>).solution || (rec as Record<string, unknown>).issue || JSON.stringify(rec)
           )
         );
       }
     }
 
     logger.info(
-      `🔍 Security context: ${securityData.configFiles.length} config files, ${securityData.securityIssues.length} known issues`
+      `Security context: ${securityData.configFiles.length} config files, ${securityData.securityIssues.length} known issues`
     );
   } catch (error) {
     logger.warn(
-      '⚠️ Could not load security context from analysis files:',
-      error
+      'Could not load security context from analysis files'
     );
   }
 
@@ -268,7 +245,14 @@ async function collectSecurityRelevantData(): Promise<{
 
 async function collectMCPSecurityData(
   options: SecurityScanOptions
-): Promise<any> {
+): Promise<{
+  semgrep: SemgrepReport | null;
+  trivy: TrivyReport | null;
+  available: {
+    semgrep: boolean;
+    trivy: boolean;
+  };
+}> {
   const logger = getLogger();
   const mcpClient = McpClient.fromConfig();
 
@@ -282,7 +266,7 @@ async function collectMCPSecurityData(
   };
 
   try {
-    logger.info('🔍 Executing Semgrep scan via MCP...');
+    logger.info('Executing Semgrep scan via MCP');
     const semgrepResult = await mcpClient.semgrepScan(options.target || '.');
 
     if (semgrepResult?.findings) {
@@ -310,23 +294,21 @@ async function collectMCPSecurityData(
       
       const totalFindings = semgrepResult.findings.length;
       logger.info(
-        `✅ Semgrep: ${filteredFindings.length}/${totalFindings} findings found (${minSeverity}+ severity)`
+        `Semgrep: ${filteredFindings.length}/${totalFindings} findings found (${minSeverity}+ severity)`
       );
     }
   } catch (error) {
     logger.warn(
-      '⚠️ Semgrep MCP not available, continuing with static analysis:',
-      error
+      'Semgrep MCP not available, continuing with static analysis'
     );
   }
 
   if (options.trivy) {
     try {
-      logger.info('🔍 Executing Trivy scan via MCP...');
+      logger.info('Executing Trivy scan via MCP');
       const trivyResult = await mcpClient.trivyScan(options.target || '.');
 
       if (trivyResult) {
-        // Trivy executou com sucesso, mesmo se não encontrou vulnerabilidades
         mcpData.trivy = trivyResult;
         mcpData.available.trivy = true;
 
@@ -335,16 +317,15 @@ async function collectMCPSecurityData(
         
         if (vulnsCount > 0 || misconfigsCount > 0) {
           logger.info(
-            `✅ Trivy: ${vulnsCount} vulnerabilities, ${misconfigsCount} misconfigurations found`
+            `Trivy: ${vulnsCount} vulnerabilities, ${misconfigsCount} misconfigurations found`
           );
         } else {
-          logger.info('✅ Trivy: No vulnerabilities or misconfigurations found (clean project)');
+          logger.info('Trivy: No vulnerabilities or misconfigurations found (clean project)');
         }
       }
     } catch (error) {
       logger.warn(
-        '⚠️ Trivy MCP not available, analysis will focus on static code:',
-        error
+        'Trivy MCP not available, analysis will focus on static code'
       );
     }
   }
@@ -380,7 +361,7 @@ async function saveResults(
         : generateMarkdownReport(result);
 
     fs.writeFileSync(options.output, outputContent, 'utf-8');
-    logger.info(`📄 Security report saved: ${options.output}`);
+    logger.info(`Security report saved: ${options.output}`);
   } else {
     // Always save JSON in .clia for integration (no timestamp)
     const integrationJsonFile = path.join(cliaDir, 'security-scan.json');
@@ -394,7 +375,7 @@ async function saveResults(
     const mdFile = path.join(reportsDir, `${timestamp}_security-scan.md`);
     fs.writeFileSync(mdFile, generateMarkdownReport(result), 'utf-8');
 
-    logger.info(`📄 Reports saved: ${integrationJsonFile}, ${mdFile}`);
+    logger.info(`Reports saved: ${integrationJsonFile}, ${mdFile}`);
   }
 
   displaySecuritySummary(result);
@@ -456,21 +437,12 @@ ${result.recommendations.map((rec, i) => `${i + 1}. ${rec}`).join('\n')}
 }
 
 function displaySecuritySummary(result: SecurityResponse): void {
-  const logger = getLogger();
-
-  console.log('\n🛡️ Security Analysis Summary');
+  console.log('\nSecurity Analysis Summary');
   console.log('='.repeat(50));
 
-  const scoreEmoji =
-    result.security_score >= 8
-      ? '🟢'
-      : result.security_score >= 6
-        ? '🟡'
-        : '🔴';
-
-  console.log(`📊 Security Score: ${scoreEmoji} ${result.security_score}/10`);
-  console.log(`🔍 Total Findings: ${result.vulnerabilities.length}`);
-  console.log(`📈 Confidence: ${(result.confidence * 100).toFixed(1)}%`);
+  console.log(`Security Score: ${result.security_score}/10`);
+  console.log(`Total Findings: ${result.vulnerabilities.length}`);
+  console.log(`Confidence: ${(result.confidence * 100).toFixed(1)}%`);
 
   if (result.vulnerabilities.length > 0) {
     const severityCounts = result.vulnerabilities.reduce(
@@ -481,22 +453,14 @@ function displaySecuritySummary(result: SecurityResponse): void {
       {} as Record<string, number>
     );
 
-    console.log('\n🚨 Vulnerabilities by Severity:');
+    console.log('\nVulnerabilities by Severity:');
     Object.entries(severityCounts).forEach(([severity, count]) => {
-      const emoji =
-        severity === 'critical'
-          ? '🔴'
-          : severity === 'high'
-            ? '🟠'
-            : severity === 'medium'
-              ? '🟡'
-              : '🟢';
-      console.log(`   ${emoji} ${severity}: ${count}`);
+      console.log(`   ${severity}: ${count}`);
     });
   }
 
-  console.log('\n💡 Next Steps:');
-  console.log('   🔍 Review identified vulnerabilities');
-  console.log('   🛠️  Implement security recommendations');
-  console.log('   🔄 Re-run scan after fixes');
+  console.log('\nNext Steps:');
+  console.log('   - Review identified vulnerabilities');
+  console.log('   - Implement security recommendations');
+  console.log('   - Re-run scan after fixes');
 }
