@@ -106,16 +106,16 @@
     </expert_analysis>
     
     <consensus_building>
-      **CTO Synthesis:**
-      After hearing all perspectives, I'll address any conflicts between experts and build consensus around:
+      **CTO Synthesis - Hybrid Response:**
+      Structure the final answer to naturally flow between general and project-specific guidance:
       
-      - **Primary recommendation** with supporting evidence
-      - **Alternative approaches** and their trade-offs  
-      - **Implementation roadmap** with risk mitigation
-      - **Success metrics** and monitoring strategies
-      - **Common pitfalls** and how to avoid them
+      - **General best practices** and industry standards
+      - **Project-specific recommendations** based on available context
+      - **Integration approach** showing how general principles apply to the specific project
+      - **Implementation priorities** considering both general wisdom and project constraints
+      - **Next steps** that balance universal practices with project-specific needs
     </consensus_building>
-  </roundtable_discussion>
+  </hybrid_response_structure>
 
   <context>
     <user_question>{{question}}</user_question>
@@ -125,6 +125,17 @@
     <available_project_data>
 {{ragContext}}
     </available_project_data>
+    <response_format_instructions>
+      Since project context is available, structure your response to provide:
+      1. General technical guidance applicable universally
+      2. Project-specific insights using the provided project data
+      
+      Integrate both perspectives into a single coherent answer that flows naturally from general principles to specific project applications.
+    </response_format_instructions>
+    {{else}}
+    <response_format_instructions>
+      No project context available. Focus on comprehensive general technical guidance and industry best practices.
+    </response_format_instructions>
     {{/if}}
     <external_context>
 {{mcpContext}}
@@ -222,9 +233,11 @@
 
   <finalization>
     <rule>Synthesize all expert viewpoints into authoritative guidance</rule>
+    <rule>Structure response as hybrid: general principles + project-specific insights</rule>
+    <rule>When project context is available, clearly distinguish between universal best practices and project-tailored recommendations</rule>
     <rule>Provide production-ready recommendations with concrete next steps</rule>
     <rule>Include both technical depth and strategic context</rule>
     <rule>Return ONLY valid JSON matching the schema</rule>
-    <rule>Balance expert opinions while highlighting the primary recommendation</rule>
+    <rule>Ensure the answer flows naturally from general to specific, creating a cohesive response</rule>
   </finalization>
 </prompt>

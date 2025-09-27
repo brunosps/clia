@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { loadConfig } from '../config.js';
+import { loadConfig, Config } from '../config.js';
 import { getLogger } from '../shared/logger.js';
 import { execPrompt } from '../shared/utils.js';
 import { getOutputLanguage } from '../shared/translation.js';
@@ -7,6 +7,26 @@ import { makeEmbeddings } from '../embeddings/provider.js';
 import { retrieveForFiles, hasRagDatabase } from '../rag/index.js';
 import * as fs from 'fs';
 import * as path from 'path';
+
+interface AskOptions {
+  projectOnly?: boolean;
+  format?: string;
+  output?: string;
+  limit?: string;
+}
+
+type AnalysisMode =
+  | 'source-analysis'
+  | 'project-only'
+  | 'doc-analysis'
+  | 'general';
+type FileKind = 'doc' | 'code' | 'config' | 'unknown';
+
+interface CodeExample {
+  language: string;
+  code: string;
+  description: string;
+}
 
 interface BasePromptContext {
   question: string;
@@ -41,11 +61,7 @@ interface AskResponse {
   result?: string;
   confidence?: number;
   language?: string;
-  code_examples?: Array<{
-    language: string;
-    code: string;
-    description: string;
-  }>;
+  code_examples?: CodeExample[];
   related_topics?: string[];
   project_references?: string[];
   follow_up_suggestions?: string[];
@@ -56,26 +72,7 @@ export function askCommand(): Command {
 
   cmd
     .description(
-      `
-🤖 AI Question Assistant v1.0.0
-
-Intelligent system for technical question answering with AI assistance
-and external knowledge enrichment via Standard Command Structure.
-
-Features:
-  • Natural language question processing
-  • Project-specific context integration via RAG
-  • Multilingual query support and translation
-  • Code examples and practical solutions
-  • Focus mode for project-only context
-  • Standard Command Structure v1.0.0
-
-Examples:
-  clia ask "How to implement JWT authentication?"
-  clia ask "What's the best way to handle async operations?"
-  clia ask "Como configurar um servidor Express.js?"
-  clia ask "What are the security best practices for APIs?"
-  clia ask "How to optimize database queries in this project?"`
+      'AI-powered question answering with project context integration and multilingual support'
     )
     .argument(
       '<question>',
@@ -97,18 +94,19 @@ Examples:
       ''
     )
     .option('-k, --limit <number>', '🔢 Maximum RAG contexts to include', '6')
-    .action(async (question: string, options) => {
+    .action(async (question: string, options: AskOptions) => {
       const logger = getLogger();
       try {
-        logger.info('🚀 Starting ask command');
-        const result = await processAskQuery(question, options, logger);
-        await displayAndSaveResponse(result, options, logger);
-        logger.info('✅ Ask command completed successfully');
+        logger.info('Starting ask command');
+        const result = await processAskQuery(question, options);
+        await displayAndSaveResponse(result, options);
+        logger.info('Ask command completed successfully');
         process.exit(0);
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
-        logger.error(`❌ Ask command failed: ${errorMessage}`);
+        logger.error(`Ask command failed: ${errorMessage}`);
+        console.log(`Ask command failed: ${errorMessage}`);
         process.exit(1);
       }
     });
@@ -118,11 +116,10 @@ Examples:
 
 export async function processAskQuery(
   question: string,
-  options?: any,
-  logger?: any
+  options?: AskOptions
 ): Promise<AskResponse> {
   const config = await loadConfig();
-  const loggerInstance = logger || getLogger();
+  const logger = getLogger();
   const userLanguage = getOutputLanguage(config);
 
   const questionFilePath = inferFilePathFromQuestion(question);
@@ -133,13 +130,13 @@ export async function processAskQuery(
 
   const analysisMode = determineAnalysisMode(
     question,
-    options?.projectOnly,
+    options?.projectOnly || false,
     questionFilePath,
     questionFileKind
   );
-  loggerInstance.info(`🎯 Using analysis mode: ${analysisMode}`);
+  logger.info(`Using analysis mode: ${analysisMode}`);
 
-  let result;
+  let result: AskResponse;
   if (analysisMode === 'source-analysis') {
     result = await processSourceAnalysis(
       question,
@@ -172,16 +169,12 @@ export async function processAskQuery(
   return result;
 }
 function displayResult(result: string) {
-  console.log('\n🤖 AI Assistant Response (JSON):');
-  console.log('='.repeat(60));
   console.log(result);
-  console.log('='.repeat(60));
 }
 
 async function displayAndSaveResponse(
   result: AskResponse,
-  options: any,
-  logger: any
+  options: AskOptions
 ) {
   let content: string;
   let extension: string;
@@ -197,61 +190,59 @@ async function displayAndSaveResponse(
   displayResult(content);
 
   if (options.output) {
-    await saveResultToFile(content, extension, options, logger);
+    await saveResultToFile(content, extension, options);
   }
 }
 
 async function saveResultToFile(
   content: string,
   extension: string,
-  options: any,
-  logger: any
+  options: AskOptions
 ) {
+  const logger = getLogger();
   try {
-    let fileName = options.output;
+    let fileName = options.output!;
     if (!fileName.includes('.')) {
       fileName += extension;
     }
 
-    // Ensure .clia directory exists
     const cliaDir = path.join(process.cwd(), '.clia');
     if (!fs.existsSync(cliaDir)) {
       fs.mkdirSync(cliaDir, { recursive: true });
     }
 
-    // If relative path, save in .clia directory
     const outputPath = path.isAbsolute(fileName)
       ? fileName
       : path.join(cliaDir, fileName);
 
     fs.writeFileSync(outputPath, content, 'utf-8');
-    logger.info(`💾 Response saved to: ${outputPath}`);
+    logger.info(`Response saved to: ${outputPath}`);
   } catch (error) {
-    logger.error(`❌ Failed to save response: ${error}`);
+    throw new Error(`Failed to save response: ${error}`);
   }
 }
 
 function generateMarkdownContent(result: AskResponse): string {
-  let content = '# 🤖 AI Assistant Response\n\n';
+  let content = '# AI Assistant Response\n\n';
 
-  content += '## 💬 Answer\n\n';
+  content += '## Answer\n\n';
   content += result.answer + '\n\n';
 
   if (result.confidence) {
-    content += `## 🎯 Confidence: ${result.confidence}%\n\n`;
+    content += `## Confidence: ${result.confidence}%\n\n`;
   }
 
   if (result.code_examples && result.code_examples.length > 0) {
-    content += '## 💻 Code Examples\n\n';
+    content += '## Code Examples\n\n';
     result.code_examples.forEach((example, index) => {
-      content += `### 📝 Example ${index + 1} (${example.language})\n\n`;
+      content += `### Example ${index + 1} (${example.language})\n\n`;
       content += `${example.description}\n\n`;
       content += `\`\`\`${example.language}\n${example.code}\n\`\`\`\n\n`;
     });
   }
 
   if (result.related_topics && result.related_topics.length > 0) {
-    content += '## 🔗 Related Topics\n\n';
+    content += '## Related Topics\n\n';
     result.related_topics.forEach((topic) => {
       content += `- ${topic}\n`;
     });
@@ -259,7 +250,7 @@ function generateMarkdownContent(result: AskResponse): string {
   }
 
   if (result.project_references && result.project_references.length > 0) {
-    content += '## 📁 Project References\n\n';
+    content += '## Project References\n\n';
     result.project_references.forEach((ref) => {
       content += `- ${ref}\n`;
     });
@@ -267,7 +258,7 @@ function generateMarkdownContent(result: AskResponse): string {
   }
 
   if (result.follow_up_suggestions && result.follow_up_suggestions.length > 0) {
-    content += '## 💡 Follow-up Suggestions\n\n';
+    content += '## Follow-up Suggestions\n\n';
     result.follow_up_suggestions.forEach((suggestion) => {
       content += `- ${suggestion}\n`;
     });
@@ -281,8 +272,8 @@ function determineAnalysisMode(
   question: string,
   projectOnly: boolean,
   filePath?: string,
-  fileKind?: 'doc' | 'code' | 'config' | 'unknown'
-): 'source-analysis' | 'project-only' | 'doc-analysis' | 'general' {
+  fileKind?: FileKind
+): AnalysisMode {
   // If a specific file is referenced and it exists, analyze by file type
   if (filePath && fs.existsSync(filePath)) {
     if (fileKind === 'doc') {
@@ -304,13 +295,10 @@ function determineAnalysisMode(
 async function processSourceAnalysis(
   question: string,
   filePath: string,
-  config: any,
+  config: Config,
   userLanguage: string
 ): Promise<AskResponse> {
-  const logger = getLogger();
-
   try {
-    // Read the complete source file
     const sourceContent = fs.readFileSync(filePath, 'utf-8');
     const fileExtension = path.extname(filePath);
 
@@ -329,13 +317,12 @@ async function processSourceAnalysis(
       promptContext,
       '1.0.0',
       'default',
-      5,
+      2,
       3
     );
 
     return response;
   } catch (error) {
-    logger.error(`❌ Failed to read source file ${filePath}: ${error}`);
     throw new Error(`Could not read source file: ${filePath}`);
   }
 }
@@ -343,13 +330,10 @@ async function processSourceAnalysis(
 async function processDocAnalysis(
   question: string,
   filePath: string,
-  config: any,
+  config: Config,
   userLanguage: string
 ): Promise<AskResponse> {
-  const logger = getLogger();
-
   try {
-    // Read the complete documentation file
     const sourceContent = fs.readFileSync(filePath, 'utf-8');
     const fileExtension = path.extname(filePath);
 
@@ -368,28 +352,27 @@ async function processDocAnalysis(
       promptContext,
       '1.0.0',
       'default',
-      5,
+      2,
       3
     );
 
     return response;
   } catch (error) {
-    logger.error(`❌ Failed to read documentation file ${filePath}: ${error}`);
     throw new Error(`Could not read documentation file: ${filePath}`);
   }
 }
 
 async function processProjectOnlyAnalysis(
   question: string,
-  config: any,
+  config: Config,
   userLanguage: string,
-  options: any
+  options?: AskOptions
 ): Promise<AskResponse> {
   const logger = getLogger();
 
   let ragContextRaw = '';
   let hasProjectContext = false;
-  let hasRag = hasRagDatabase(process.cwd());
+  const hasRag = hasRagDatabase(process.cwd());
 
   if (!hasRag) {
     throw new Error(
@@ -398,47 +381,42 @@ async function processProjectOnlyAnalysis(
   }
 
   try {
-    const embedder = await makeEmbeddings(config.project?.rag || {}, config);
+      const ragConfig = config.project?.rag || { includes: [], excludes: [], chunkSize: 1000, chunkOverlap: 200 };
+      const embedder = await makeEmbeddings(ragConfig, config as any);    const enhancedQuery = enhanceQuery(question);
+    logger.info(
+      `Enhanced query: ${enhancedQuery !== question ? 'applied' : 'no enhancement'}`
+    );
 
-    // Enhanced query for better context retrieval in project-only mode
-    let enhancedQuery = question;
-
-    // If asking about a specific command, include related terms
-    if (
-      question.toLowerCase().includes('comando') &&
-      question.toLowerCase().includes('commit')
-    ) {
-      enhancedQuery = `${question} commitCommand src/commands/commit.ts CLIA commit generation automatic message conventional`;
-    }
-
-    // Get more context for project-only mode - up to 15 chunks for better coverage
     const ragResults = await retrieveForFiles(enhancedQuery, [], 15, embedder);
     ragContextRaw = ragResults.join('\n---\n');
     hasProjectContext = ragResults.length > 0;
 
-    logger.info(`✅ Found ${ragResults.length} project context chunks`);
+    logger.info(`Found ${ragResults.length} project context chunks`);
 
-    // If still no relevant context found and question is about commit command,
-    // try specific file-based search
-    if (ragResults.length < 3 && question.toLowerCase().includes('commit')) {
-      const commitQuery = 'commitCommand Command commit src/commands/commit';
-      const fallbackResults = await retrieveForFiles(
-        commitQuery,
-        [],
-        10,
-        embedder
+    if (ragResults.length < 3) {
+      const lowerQuestion = question.toLowerCase();
+      const relevantEnhancement = QUERY_ENHANCEMENTS.find((enhancement) =>
+        enhancement.keywords.some((keyword) => lowerQuestion.includes(keyword))
       );
 
-      if (fallbackResults.length > 0) {
-        ragContextRaw = fallbackResults.join('\n---\n');
-        hasProjectContext = true;
+      if (relevantEnhancement) {
+        const fallbackResults = await retrieveForFiles(
+          relevantEnhancement.enhancement,
+          relevantEnhancement.fileHints || [],
+          10,
+          embedder
+        );
+
+        if (fallbackResults.length > 0) {
+          ragContextRaw = fallbackResults.join('\n---\n');
+          hasProjectContext = true;
+          logger.info(
+            `Fallback search found ${fallbackResults.length} additional chunks`
+          );
+        }
       }
     }
   } catch (error) {
-    logger.error(
-      'Failed to retrieve RAG context for project-only mode:',
-      error
-    );
     throw new Error('Could not retrieve project context for project-only mode');
   }
 
@@ -448,10 +426,9 @@ async function processProjectOnlyAnalysis(
     );
   }
 
-  // Don't truncate context for project-only mode - use full RAG context
   const promptContext: ProjectOnlyPromptContext = {
     question,
-    ragContext: ragContextRaw, // Full context for project-only mode
+    ragContext: ragContextRaw,
     mcpContext: 'No MCP context available',
     projectName: config.project?.name || 'Unknown Project',
     userLanguage,
@@ -462,7 +439,7 @@ async function processProjectOnlyAnalysis(
     promptContext,
     '1.0.0',
     'default',
-    5,
+    0.5,
     3
   );
 
@@ -471,19 +448,41 @@ async function processProjectOnlyAnalysis(
 
 async function processGeneralAnalysis(
   question: string,
-  config: any,
+  config: Config,
   userLanguage: string,
-  options: any
+  options?: AskOptions
 ): Promise<AskResponse> {
   const logger = getLogger();
+  let ragContextRaw = 'No RAG context available';
+  let hasProjectContext = false;
+
+  try {
+    const hasRag = hasRagDatabase(process.cwd());
+    if (hasRag) {
+      logger.info('RAG database found, loading project context for hybrid response');
+      
+      const embedder = await makeEmbeddings(config.project?.rag || {}, config);
+      const enhancedQuery = enhanceQuery(question);
+      
+      const ragResults = await retrieveForFiles(enhancedQuery, [], 8, embedder);
+      
+      if (ragResults.length > 0) {
+        ragContextRaw = ragResults.join('\n---\n');
+        hasProjectContext = true;
+        logger.info(`Loaded ${ragResults.length} project context chunks for hybrid response`);
+      }
+    }
+  } catch (error) {
+    logger.warn('Failed to load RAG context, proceeding with general-only response');
+  }
 
   const promptContext: GeneralPromptContext = {
     question,
-    ragContext: 'No RAG context available',
+    ragContext: ragContextRaw,
     mcpContext: 'No MCP context available',
     projectName: config.project?.name || 'Unknown Project',
     userLanguage,
-    hasProjectContext: false,
+    hasProjectContext,
   };
 
   const response = await execPrompt<GeneralPromptContext, AskResponse>(
@@ -498,17 +497,14 @@ async function processGeneralAnalysis(
   return response;
 }
 
-// --- helpers ---------------------------------------------------------------
-// 1) Helpers: inferir file path/ext/kind a partir da pergunta
 function inferFilePathFromQuestion(q: string): string | undefined {
-  // exemplos: "What does the file 'docs/COMPLETE_DEVELOPMENT_GUIDE.md' do?"
   const m = q.match(
     /['"`]([^'"`]+?\.(?:md|txt|rst|ya?ml|json|ts|js|tsx|jsx|toml|ini|conf))['"`]/i
   );
   return m?.[1];
 }
 
-function kindFromExt(ext?: string): 'doc' | 'code' | 'config' | 'unknown' {
+function kindFromExt(ext?: string): FileKind {
   if (!ext) return 'unknown';
   const e = ext.toLowerCase();
   if (['.md', '.txt', '.rst'].includes(e)) return 'doc';
@@ -535,7 +531,6 @@ function kindFromExt(ext?: string): 'doc' | 'code' | 'config' | 'unknown' {
   return 'unknown';
 }
 
-// 2) Truncador de contexto (mantém o RAG "magro")
 function truncateContext(input: string, maxChars = 8000): string {
   if (!input) return '';
   return input.length <= maxChars
@@ -543,11 +538,60 @@ function truncateContext(input: string, maxChars = 8000): string {
     : input.slice(0, maxChars) + '\n...[truncated]';
 }
 
-function extractQuestionFile(raw: string): {
+function enhanceQuery(question: string): string {
+  const lowerQuestion = question.toLowerCase();
+
+  for (const enhancement of QUERY_ENHANCEMENTS) {
+    const hasAllKeywords = enhancement.keywords.every((keyword) =>
+      lowerQuestion.includes(keyword)
+    );
+
+    if (hasAllKeywords) {
+      return `${question} ${enhancement.enhancement}`;
+    }
+  }
+
+  return question;
+}
+
+interface QuestionFile {
   path?: string;
   ext?: string;
-  kind: 'doc' | 'code' | 'config' | 'unknown';
-} {
+  kind: FileKind;
+}
+
+interface QueryEnhancement {
+  keywords: string[];
+  enhancement: string;
+  fileHints?: string[];
+}
+
+const QUERY_ENHANCEMENTS: QueryEnhancement[] = [
+  {
+    keywords: ['comando', 'commit'],
+    enhancement:
+      'commitCommand src/commands/commit.ts CLIA commit generation automatic message conventional',
+    fileHints: ['src/commands/commit.ts'],
+  },
+  {
+    keywords: ['rag', 'retrieval'],
+    enhancement:
+      'RAG retrieval-augmented generation indexing chunking embeddings',
+    fileHints: ['src/rag/'],
+  },
+  {
+    keywords: ['config', 'configuração'],
+    enhancement: 'configuration setup LLM providers API keys',
+    fileHints: ['src/config.ts', 'src/commands/configure.ts'],
+  },
+  {
+    keywords: ['security', 'segurança', 'scan'],
+    enhancement: 'security scan vulnerabilities semgrep analysis',
+    fileHints: ['src/commands/security-scan.ts'],
+  },
+];
+
+function extractQuestionFile(raw: string): QuestionFile {
   // tenta achar 'algum/arquivo.ext' entre aspas simples/dobras OU sem aspas
   const quoted = raw.match(/['"]([^'"]+\.[A-Za-z0-9._-]+)['"]/);
   const direct = !quoted
@@ -583,7 +627,7 @@ function extractQuestionFile(raw: string): {
     'conf',
     'properties',
   ]);
-  let kind: 'doc' | 'code' | 'config' | 'unknown' = 'unknown';
+  let kind: FileKind = 'unknown';
   if (docExts.has(ext)) kind = 'doc';
   else if (codeExts.has(ext)) kind = 'code';
   else if (cfgExts.has(ext)) kind = 'config';
