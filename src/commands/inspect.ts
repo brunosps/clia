@@ -472,31 +472,14 @@ function parseRustVersions(projectPath: string) {
   }
 }
 
-/**
- * Gera configuração RAG dinâmica baseada em dados reais do projeto
- * Segue o princípio: "100% real data via MCP integration - Zero simulations"
- */
-function generateRealRagConfig(structure: any, config?: any) {
-  // 1. DADOS REAIS: Detectar diretórios de inclusão baseados na estrutura real
+function generateRealRagConfig(structure: Record<string, unknown>, config?: Record<string, unknown>): Record<string, unknown> {
   const realIncludePaths = detectRealIncludePaths(structure);
-
-  // 2. DADOS REAIS: Usar sistema mergeExcludes para exclusões dinâmicas
   const realExcludes = mergeExcludes(config || {}, null);
-
-  // 3. DADOS REAIS: Arquivos de documentação descobertos dinamicamente
-  const documentationFiles = structure?.documentationFiles || [];
-  const discoveredDocPaths = documentationFiles.slice(0, 30); // Aumentado de 20 para 30
-
-  // 4. DADOS REAIS: Caminhos recomendados baseados nos descobertos
+  const documentationFiles = (structure?.documentationFiles as string[]) || [];
+  const discoveredDocPaths = documentationFiles.slice(0, 30);
   const recommendedDocPaths = generateRecommendedDocPaths(documentationFiles);
-
-  // 5. DADOS REAIS: Configuração de chunking baseada no tamanho real do projeto
   const chunkingConfig = calculateRealChunkingConfig(structure);
-
-  // 6. DADOS REAIS: Arquivos prioritários descobertos dinamicamente
   const priorityFiles = detectRealPriorityFiles(documentationFiles, structure);
-
-  // 7. DADOS REAIS: Estimativa de tamanho baseada no projeto real
   const estimatedSize = calculateRealIndexSize(structure);
 
   return {
@@ -525,8 +508,8 @@ function generateRealRagConfig(structure: any, config?: any) {
 /**
  * Detecta caminhos de inclusão reais baseados na estrutura do projeto
  */
-function detectRealIncludePaths(structure: any): string[] {
-  const directories = structure?.directories || [];
+function detectRealIncludePaths(structure: Record<string, unknown>): string[] {
+  const directories = (structure?.directories as string[]) || [];
   const commonSourceDirs = [
     'src',
     'lib',
@@ -602,10 +585,10 @@ function generateRecommendedDocPaths(documentationFiles: string[]): string[] {
 /**
  * Calcula configuração de chunking baseada no tamanho real do projeto
  */
-function calculateRealChunkingConfig(structure: any) {
-  const totalFiles = structure?.totalFiles || 0;
-  const sourceFiles = structure?.sourceFiles?.length || 0;
-  const docFiles = structure?.documentationFiles?.length || 0;
+function calculateRealChunkingConfig(structure: Record<string, unknown>): Record<string, unknown> {
+  const totalFiles = (structure?.totalFiles as number) || 0;
+  const sourceFiles = ((structure?.sourceFiles as string[])?.length) || 0;
+  const docFiles = ((structure?.documentationFiles as string[])?.length) || 0;
 
   // Configuração adaptativa baseada no tamanho real
   if (totalFiles > 1000) {
@@ -640,7 +623,7 @@ function calculateRealChunkingConfig(structure: any) {
  */
 function detectRealPriorityFiles(
   documentationFiles: string[],
-  structure: any
+  structure: Record<string, unknown>
 ): string[] {
   const priorities: string[] = [];
 
@@ -660,9 +643,9 @@ function detectRealPriorityFiles(
 
   // Adicionar padrões de documentação descobertos
   const docDirs =
-    structure?.directories?.filter(
+    ((structure?.directories as string[]) || []).filter(
       (d: string) => d.includes('docs') || d.includes('documentation')
-    ) || [];
+    );
 
   for (const dir of docDirs.slice(0, 3)) {
     priorities.push(`${dir}/**/*.md`);
@@ -674,9 +657,9 @@ function detectRealPriorityFiles(
 /**
  * Calcula estimativa real do tamanho do índice
  */
-function calculateRealIndexSize(structure: any): string {
-  const totalFiles = structure?.totalFiles || 0;
-  const sourceFiles = structure?.sourceFiles?.length || 0;
+function calculateRealIndexSize(structure: Record<string, unknown>): string {
+  const totalFiles = (structure?.totalFiles as number) || 0;
+  const sourceFiles = ((structure?.sourceFiles as string[])?.length) || 0;
 
   if (totalFiles > 2000 || sourceFiles > 500) {
     return '~large';
@@ -691,30 +674,10 @@ export function inspectCommand(): Command {
   const cmd = new Command('inspect');
 
   cmd
-    .description(
-      `
-🔍 Project Analysis v1.0.0
-
-Intelligent system for complete project analysis and RAG optimization
-following conventional patterns with Standard Command Structure.
-
-Features:
-  • Complete project structure analysis
-  • Technology stack detection via MCP
-  • RAG indexing optimization recommendations
-  • Human-readable reports with actionable insights
-  • Multi-format output (JSON, Markdown)
-  • Standard Command Structure v1.0.0
-
-Examples:
-  clia inspect                           # Basic project analysis
-  clia inspect --depth comprehensive     # Deep analysis with premium LLM
-  clia inspect --format json            # JSON output only
-  clia inspect -o custom-report.md      # Custom output file`
-    )
-    .option('-o, --output <file>', '📁 Output file path')
-    .option('--include-tests', '🧪 Include test files in analysis', false)
-    .option('-f, --format <type>', '📋 Output format: human|json', 'human')
+    .description('Complete project analysis with stack detection and RAG optimization recommendations')
+    .option('-o, --output <file>', 'Output file path')
+    .option('--include-tests', 'Include test files in analysis', false)
+    .option('-f, --format <type>', 'Output format: human|json', 'human')
     .action(async (options) => {
       const logger = getLogger();
 
@@ -731,8 +694,8 @@ Examples:
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
-        logger.debug(errorMessage);
-        await logger.error(`❌ Inspect operation failed: ${errorMessage}`);
+        logger.error(`Inspect operation failed: ${errorMessage}`);
+        console.log(`Inspect operation failed: ${errorMessage}`);
         process.exit(1);
       }
     });
@@ -743,36 +706,24 @@ Examples:
 async function processInspectOperation(options: InspectOptions): Promise<void> {
   const config = await loadConfig();
   const logger = getLogger();
-  logger.debug('🔍 processInspectOperation started');
-  logger.debug('🔍 config loaded successfully');
-  logger.debug('🔍 logger initialized');
 
   const tier = options.depth === 'comprehensive' ? 'premium' : 'default';
-  logger.debug(`🔍 using tier: ${tier}`);
+  logger.info(`Starting project inspection with ${tier} tier`);
 
-  logger.info(`🔍 Starting project inspection with ${tier} tier`);
-
-  logger.debug('🔍 calling collectProjectStructure...');
   const projectStructure = await collectProjectStructure();
-  logger.debug('🔍 collectProjectStructure completed');
 
-  logger.debug('🔍 starting MCP stack detection...');
-  let stackData = {};
+  let stackData: Record<string, unknown> = {};
   try {
-    logger.debug('🔍 creating MCP client...');
     const mcpClient = McpClient.fromConfig();
-    logger.debug('🔍 MCP client created, calling detectStack...');
-    stackData = await mcpClient.detectStack();
-    logger.debug('🔍 stack detection completed successfully');
+    const stackInfo = await mcpClient.detectStack();
+    stackData = stackInfo as unknown as Record<string, unknown>;
+    logger.info('Stack detection completed successfully');
   } catch (error) {
-    logger.debug('🔍 stack detection failed:', error);
+    logger.warn('Stack detection not available, proceeding without MCP data');
     stackData = { message: 'Stack detection not available' };
   }
 
-  // Enhance stackData with parsed versions
-  logger.debug('🔍 parsing versions from project files...');
   const cwd = process.cwd();
-  logger.debug(`🔍 current working directory: ${cwd}`);
   const parsedVersions = {
     javascript: parsePackageJsonVersions(path.join(cwd, 'package.json')),
     python: parsePythonVersions(cwd),
@@ -780,19 +731,15 @@ async function processInspectOperation(options: InspectOptions): Promise<void> {
     go: parseGoVersions(cwd),
     rust: parseRustVersions(cwd),
   };
-  logger.debug('🔍 version parsing completed');
 
-  logger.debug('🔍 enhancing stack data...');
   const enhancedStackData = {
     ...stackData,
     parsedVersions,
   };
-  logger.debug('🔍 stack data enhanced');
 
-  logger.debug('🔍 creating prompt context...');
   const promptContext: PromptContext = {
     projectName: config.project?.name || 'Unknown Project',
-    timestamp: new Date().toISOString(),
+    timestamp: generateTimestamp(),
     userLanguage: config.translateReports
       ? config.language || 'en-us'
       : 'en-us',
@@ -800,26 +747,22 @@ async function processInspectOperation(options: InspectOptions): Promise<void> {
     stackData: JSON.stringify(enhancedStackData, null, 2),
     analysisDepth: options.depth || 'detailed',
   };
-  logger.debug('🔍 prompt context created, calling LLM...');
 
   let result = await execPrompt<PromptContext, InspectResponse>(
-    'inspect/system',
+    'inspect',
     promptContext,
     '1.0.0',
     tier,
-    5,
-    3
+    0.3
   );
-  logger.debug('🔍 LLM call completed successfully');
+  logger.info('Project analysis completed successfully');
 
   try {
     result = assertInspectResponse(result);
   } catch (error) {
-    logger.warn(
-      `⚠️ LLM response validation failed, applying defaults: ${error}`
-    );
-    // Apply real RAG config if validation fails
-    const realRag = generateRealRagConfig(projectStructure, config);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.warn(`Response validation failed, applying defaults: ${errorMessage}`);
+    const realRag = generateRealRagConfig(projectStructure as unknown as Record<string, unknown>, config as unknown as Record<string, unknown>);
     result = {
       ...result,
       ragOptimization: {
@@ -835,17 +778,8 @@ async function processInspectOperation(options: InspectOptions): Promise<void> {
     result.ragOptimization.directoryStructure.excludePaths.push('.clia');
   }
 
-  logger.info('🔄 Calling saveResults...');
   await saveResults(result, config, options, logger);
-  logger.info('✅ saveResults completed');
-
-  logger.info('✅ Project inspection completed successfully');
-
-  // Forçar saída do processo se necessário
-  setTimeout(() => {
-    logger.info('🔚 Forcing process exit after timeout');
-    process.exit(0);
-  }, 1000);
+  logger.info('Project inspection completed successfully');
 }
 
 // Function to read and parse .gitignore patterns
@@ -872,7 +806,6 @@ function parseGitignore(): string[] {
         return line;
       });
   } catch (error) {
-    console.warn('Warning: Could not read .gitignore file');
     return [];
   }
 }
@@ -881,14 +814,7 @@ async function collectProjectStructure(): Promise<object> {
   const logger = getLogger();
   const cwd = process.cwd();
 
-  // Read .gitignore patterns
   const gitignorePatterns = parseGitignore();
-  logger.debug(
-    `🔍 Found ${gitignorePatterns.length} gitignore patterns:`,
-    gitignorePatterns
-  );
-
-  logger.debug('🔍 Starting glob search...');
   const startTime = Date.now();
   const allFiles = await glob('**/*', {
     cwd,
@@ -976,12 +902,6 @@ async function collectProjectStructure(): Promise<object> {
       '.clia/**',
     ],
   });
-  const globTime = Date.now() - startTime;
-  logger.debug(
-    `🔍 Glob completed in ${globTime}ms, found ${allFiles.length} files`
-  );
-
-  logger.debug('🔍 Starting file categorization...');
   const directories: string[] = [];
   const files: string[] = [];
   const configFiles: string[] = [];
@@ -1018,12 +938,7 @@ async function collectProjectStructure(): Promise<object> {
       }
     }
   }
-  logger.debug('🔍 File categorization completed');
-  logger.debug(
-    `🔍 Found ${directories.length} dirs, ${files.length} files, ${configFiles.length} config, ${sourceFiles.length} source, ${documentationFiles.length} documentation, ${sensitiveFiles.length} sensitive`
-  );
 
-  logger.debug('🔍 Starting file sampling...');
   const { sampled: sampledFiles, dropped: droppedFilesCount } =
     sampleFilesByDir(files, 50);
   const { sampled: sampledDirectories, dropped: droppedDirsCount } =
@@ -1199,10 +1114,7 @@ async function saveResults(
   options: InspectOptions,
   logger: ReturnType<typeof getLogger>
 ): Promise<void> {
-  logger.info('🔄 Starting saveResults function...');
-
   const cliaDir = path.join(process.cwd(), '.clia');
-  logger.info(`📁 Creating .clia directory: ${cliaDir}`);
   if (!fs.existsSync(cliaDir)) {
     fs.mkdirSync(cliaDir, { recursive: true });
   }
@@ -1211,7 +1123,6 @@ async function saveResults(
     process.cwd(),
     config.reports?.outputDir || '.clia/reports'
   );
-  logger.info(`📁 Creating reports directory: ${reportsDir}`);
   if (!fs.existsSync(reportsDir)) {
     fs.mkdirSync(reportsDir, { recursive: true });
   }
@@ -1258,435 +1169,81 @@ function generateHumanReport(
   analysis: InspectResponse,
   config: Config
 ): string {
-  const startTime = Date.now();
-  const MAX_GENERATION_TIME = 5000; // 5 segundos máximo
+  const timestamp = new Date().toLocaleString();
 
   try {
-    const locale = (config.language || 'en-us').toLowerCase().startsWith('pt')
-      ? 'pt-BR'
-      : 'en-US';
-    const timestamp = new Date().toLocaleString(locale);
-    const isPortuguese = locale === 'pt-BR';
+    return `# Project Inspection Report
 
-    // Enhanced labels for comprehensive reporting
-    const labels = isPortuguese
-      ? {
-          title: '# 🔍 Relatório Completo de Inspeção do Projeto',
-          project: 'Projeto',
-          generatedAt: 'Gerado em',
-          confidence: 'Confiança',
-          executiveSummary: '## 📊 Resumo Executivo',
-          primaryLanguage: 'Linguagem Principal',
-          projectType: 'Tipo de Projeto',
-          complexity: 'Complexidade',
-          ragReadiness: 'Prontidão para RAG',
-          totalFiles: 'Total de Arquivos',
-          sourceFiles: 'Arquivos de Código',
-          configFiles: 'Arquivos de Configuração',
-          documentationFiles: 'Arquivos de Documentação',
-          discoveredDocumentation: 'Documentação Descoberta',
-          recommendedDocPaths: 'Caminhos Recomendados',
-          docChunkingStrategy: 'Estratégia de Chunk para Docs',
-          docChunkSize: 'Tamanho de Chunk para Docs',
-          docChunkOverlap: 'Sobreposição para Docs',
-          architecture: '## 🏗️ Arquitetura do Projeto',
-          type: 'Tipo',
-          patterns: 'Padrões Arquiteturais',
-          modules: 'Módulos Principais',
-          entryPoints: 'Pontos de Entrada',
-          isMonorepo: 'Monorepo',
-          ragOptimization: '## 🎯 Otimização RAG Detalhada',
-          includedPaths: 'Caminhos Incluídos:',
-          excludedPaths: 'Caminhos Excluídos:',
-          indexingConfig: 'Configuração de Indexação:',
-          strategy: 'Estratégia',
-          chunkSize: 'Tamanho do Chunk',
-          chunkOverlap: 'Sobreposição de Chunk',
-          estimatedSize: 'Tamanho Estimado do Índice',
-          priorityFiles: 'Arquivos Prioritários',
-          languageExclusions: 'Exclusões Específicas por Linguagem',
-          sensitiveFiles: '### 🔒 Arquivos Sensíveis Detectados',
-          noSensitiveFiles: '_Nenhum arquivo sensível detectado_',
-          techStack: '## 🛠️ Stack Tecnológico Completo',
-          detectedLanguages: '### Linguagens Detectadas',
-          frameworks: '### Frameworks e Bibliotecas',
-          packageManagers: '### Gerenciadores de Pacotes',
-          dependencies: '### Análise de Dependências',
-          production: '**Produção:**',
-          development: '**Desenvolvimento:**',
-          outdated: '**Desatualizadas:**',
-          vulnerable: '**Com Vulnerabilidades:**',
-          noOutdated: '_Todas as dependências estão atualizadas_',
-          noVulnerable: '_Nenhuma vulnerabilidade detectada_',
-          tools: '### Ferramentas e Utilitários',
-          buildTools: '**Ferramentas de Build:**',
-          testFrameworks: '**Frameworks de Teste:**',
-          linters: '**Linters:**',
-          formatters: '**Formatadores:**',
-          bundlers: '**Bundlers:**',
-          cicd: '**CI/CD:**',
-          noneDetected: '_Nenhuma detectada_',
-          unknownVersion: 'versão desconhecida',
-          recommendations: '## 💡 Recomendações Detalhadas',
-          modernization: '### 🚀 Modernização',
-          security: '### 🔒 Segurança',
-          performance: '### ⚡ Performance',
-          tooling: '### 🔧 Ferramentas',
-          documentation: '### 📖 Documentação',
-          reportGenerated: '_Relatório completo gerado pelo CLIA',
-          yes: 'Sim',
-          no: 'Não',
-          files: 'arquivos',
-          confidenceLabel: 'confiança',
-          dependenciesCount: 'dependências',
-        }
-      : {
-          title: '# 🔍 Comprehensive Project Inspection Report',
-          project: 'Project',
-          generatedAt: 'Generated at',
-          confidence: 'Confidence',
-          executiveSummary: '## 📊 Executive Summary',
-          primaryLanguage: 'Primary Language',
-          projectType: 'Project Type',
-          complexity: 'Complexity',
-          ragReadiness: 'RAG Readiness',
-          totalFiles: 'Total Files',
-          sourceFiles: 'Source Files',
-          configFiles: 'Config Files',
-          documentationFiles: 'Documentation Files',
-          discoveredDocumentation: 'Discovered Documentation',
-          recommendedDocPaths: 'Recommended Documentation Paths',
-          docChunkingStrategy: 'Documentation Chunking Strategy',
-          docChunkSize: 'Documentation Chunk Size',
-          docChunkOverlap: 'Documentation Chunk Overlap',
-          architecture: '## 🏗️ Project Architecture',
-          type: 'Type',
-          patterns: 'Architectural Patterns',
-          modules: 'Main Modules',
-          entryPoints: 'Entry Points',
-          isMonorepo: 'Monorepo',
-          ragOptimization: '## 🎯 Detailed RAG Optimization',
-          includedPaths: 'Included Paths:',
-          excludedPaths: 'Excluded Paths:',
-          indexingConfig: 'Indexing Configuration:',
-          strategy: 'Strategy',
-          chunkSize: 'Chunk Size',
-          chunkOverlap: 'Chunk Overlap',
-          estimatedSize: 'Estimated Index Size',
-          priorityFiles: 'Priority Files',
-          languageExclusions: 'Language-specific Exclusions',
-          sensitiveFiles: '### 🔒 Detected Sensitive Files',
-          noSensitiveFiles: '_No sensitive files detected_',
-          techStack: '## 🛠️ Complete Technology Stack',
-          detectedLanguages: '### Detected Languages',
-          frameworks: '### Frameworks and Libraries',
-          packageManagers: '### Package Managers',
-          dependencies: '### Dependencies Analysis',
-          production: '**Production:**',
-          development: '**Development:**',
-          outdated: '**Outdated:**',
-          vulnerable: '**Vulnerable:**',
-          noOutdated: '_All dependencies are up to date_',
-          noVulnerable: '_No vulnerabilities detected_',
-          tools: '### Tools and Utilities',
-          buildTools: '**Build Tools:**',
-          testFrameworks: '**Test Frameworks:**',
-          linters: '**Linters:**',
-          formatters: '**Formatters:**',
-          bundlers: '**Bundlers:**',
-          cicd: '**CI/CD:**',
-          noneDetected: '_None detected_',
-          unknownVersion: 'unknown version',
-          recommendations: '## 💡 Detailed Recommendations',
-          modernization: '### 🚀 Modernization',
-          security: '### 🔒 Security',
-          performance: '### ⚡ Performance',
-          tooling: '### 🔧 Tooling',
-          documentation: '### 📖 Documentation',
-          reportGenerated: '_Comprehensive report generated by CLIA',
-          yes: 'Yes',
-          no: 'No',
-          files: 'files',
-          confidenceLabel: 'confidence',
-          dependenciesCount: 'dependencies',
-        };
+**Project**: ${analysis.metadata?.projectName || 'Unknown'}
+**Generated**: ${timestamp}
+**Confidence**: ${Math.round(analysis.metadata.confidence * 100)}%
 
-    // Safely access nested properties with fallbacks
-    const safeGet = (obj: any, path: string, defaultValue: any = null) => {
-      return (
-        path.split('.').reduce((current, key) => current?.[key], obj) ??
-        defaultValue
-      );
-    };
+## Summary
 
-    // Architecture section
-    const architectureSection = safeGet(analysis, 'architecture')
-      ? `
-${labels.architecture}
+- **Primary Language**: ${analysis.summary.primaryLanguage}
+- **Project Type**: ${analysis.summary.projectType}
+- **Complexity**: ${analysis.summary.complexity}
+- **Maturity Level**: ${analysis.summary.maturityLevel}
+- **RAG Readiness**: ${analysis.summary.ragReadiness}
+- **Total Files**: ${analysis.summary.totalFiles} files
 
-- **${labels.type}**: ${safeGet(analysis, 'architecture.type', 'N/A')}
-- **${labels.isMonorepo}**: ${safeGet(analysis, 'architecture.isMonorepo') ? labels.yes : labels.no}
+## Technologies
 
-**${labels.patterns}**
-${
-  safeGet(analysis, 'architecture.patterns', [])
-    .map((pattern: string) => `- ${pattern}`)
-    .join('\n') || `- ${labels.noneDetected}`
-}
+### Languages
+${analysis.languages.map(lang => `- ${lang.name} (${lang.files} files, ${Math.round(lang.confidence * 100)}% confidence)`).join('\n')}
 
-**${labels.modules}**
-${
-  safeGet(analysis, 'architecture.modules', [])
-    .map((module: string) => `- \`${module}\``)
-    .join('\n') || `- ${labels.noneDetected}`
-}
+### Frameworks
+${analysis.frameworks.map(fw => `- ${fw.name} (${fw.language}${fw.version ? ` v${fw.version}` : ''})`).join('\n')}
 
-**${labels.entryPoints}**
-${
-  safeGet(analysis, 'architecture.entryPoints', [])
-    .map((entry: string) => `- \`${entry}\``)
-    .join('\n') || `- ${labels.noneDetected}`
-}
+### Package Managers
+${analysis.packageManagers.map(pm => `- ${pm.name}: ${pm.configFile}${pm.dependenciesCount ? ` (${pm.dependenciesCount} dependencies)` : ''}`).join('\n')}
 
----`
-      : '';
+## RAG Optimization
 
-    // Enhanced RAG Optimization section
-    const priorityFilesSection = safeGet(
-      analysis,
-      'ragOptimization.priorityFiles'
-    )
-      ? `
-**${labels.priorityFiles}**
-${safeGet(analysis, 'ragOptimization.priorityFiles', [])
-  .map((file: string) => `- \`${file}\``)
-  .join('\n')}
-`
-      : '';
+### Directory Structure
+**Include Paths:**
+${analysis.ragOptimization.directoryStructure.includePaths.map(path => `- ${path}`).join('\n')}
 
-    const languageExclusionsSection = safeGet(
-      analysis,
-      'ragOptimization.languageSpecificExclusions'
-    )
-      ? `
-**${labels.languageExclusions}**
-${Object.entries(
-  safeGet(analysis, 'ragOptimization.languageSpecificExclusions', {})
-)
-  .map(
-    ([lang, exclusions]: [string, any]) =>
-      `- **${lang}**: ${Array.isArray(exclusions) ? exclusions.map((e) => `\`${e}\``).join(', ') : exclusions}`
-  )
-  .join('\n')}
-`
-      : '';
+**Exclude Paths:**
+${analysis.ragOptimization.directoryStructure.excludePaths.map(path => `- ${path}`).join('\n')}
 
-    // Package Managers section
-    const packageManagersSection = safeGet(analysis, 'packageManagers')
-      ? `
-${labels.packageManagers}
-${safeGet(analysis, 'packageManagers', [])
-  .map(
-    (pm: any) =>
-      `- **${pm.name}**: \`${pm.configFile}\` (${pm.dependenciesCount || 0} ${labels.dependenciesCount})`
-  )
-  .join('\n')}
-`
-      : '';
+### Documentation Files
+**Discovered:**
+${analysis.ragOptimization.documentationFiles.discoveredPaths.slice(0, 10).map(path => `- ${path}`).join('\n')}
 
-    // Dependencies section
-    const dependenciesSection = safeGet(analysis, 'dependencies')
-      ? `
-${labels.dependencies}
+**Recommended Configuration:**
+- Chunk Size: ${analysis.ragOptimization.documentationFiles.recommendedChunkSize}
+- Chunk Overlap: ${analysis.ragOptimization.documentationFiles.recommendedChunkOverlap}
+- Strategy: ${analysis.ragOptimization.documentationFiles.chunkingStrategy}
 
-${labels.production}
-${
-  safeGet(analysis, 'dependencies.production', [])
-    .map((dep: string) => `- \`${dep}\``)
-    .join('\n') || `- ${labels.noneDetected}`
-}
+## Recommendations
 
-${labels.development}
-${
-  safeGet(analysis, 'dependencies.development', [])
-    .map((dep: string) => `- \`${dep}\``)
-    .join('\n') || `- ${labels.noneDetected}`
-}
+### Modernization
+${analysis.recommendations.modernization.map(rec => `- ${rec}`).join('\n')}
 
-${labels.outdated}
-${
-  safeGet(analysis, 'dependencies.outdated', [])
-    .map((dep: string) => `- \`${dep}\``)
-    .join('\n') || labels.noOutdated
-}
+### Security
+${analysis.recommendations.security.map(rec => `- ${rec}`).join('\n')}
 
-${labels.vulnerable}
-${
-  safeGet(analysis, 'dependencies.vulnerable', [])
-    .map((dep: string) => `- ⚠️ \`${dep}\``)
-    .join('\n') || labels.noVulnerable
-}
-`
-      : '';
+### Performance
+${analysis.recommendations.performance.map(rec => `- ${rec}`).join('\n')}
 
-    // Tools section
-    const toolsSection = safeGet(analysis, 'tools')
-      ? `
-${labels.tools}
+### Tooling
+${analysis.recommendations.tooling.map(rec => `- ${rec}`).join('\n')}
 
-${labels.buildTools} ${safeGet(analysis, 'tools.buildTools', []).join(', ') || labels.noneDetected}
-${labels.testFrameworks} ${safeGet(analysis, 'tools.testFrameworks', []).join(', ') || labels.noneDetected}
-${labels.linters} ${safeGet(analysis, 'tools.linters', []).join(', ') || labels.noneDetected}
-${labels.formatters} ${safeGet(analysis, 'tools.formatters', []).join(', ') || labels.noneDetected}
-${labels.bundlers} ${safeGet(analysis, 'tools.bundlers', []).join(', ') || labels.noneDetected}
-${labels.cicd} ${safeGet(analysis, 'tools.cicd', []).join(', ') || labels.noneDetected}
-`
-      : '';
-
-    return `${labels.title}
-
-**${labels.project}**: ${analysis.metadata?.projectName || 'Unknown'}  
-**${labels.generatedAt}**: ${timestamp}  
-**${labels.confidence}**: ${(analysis.metadata.confidence * 100).toFixed(1)}%
+### Documentation
+${analysis.recommendations.documentation.map(rec => `- ${rec}`).join('\n')}
 
 ---
 
-${labels.executiveSummary}
-
-- **${labels.primaryLanguage}**: ${analysis.summary.primaryLanguage}
-- **${labels.projectType}**: ${analysis.summary.projectType}
-- **${labels.complexity}**: ${analysis.summary.complexity}
-- **${labels.ragReadiness}**: ${analysis.summary.ragReadiness}
-- **${labels.totalFiles}**: ${analysis.summary.totalFiles}
-${safeGet(analysis, 'summary.sourceFiles') ? `- **${labels.sourceFiles}**: ${safeGet(analysis, 'summary.sourceFiles')}` : ''}
-${safeGet(analysis, 'summary.configFiles') ? `- **${labels.configFiles}**: ${safeGet(analysis, 'summary.configFiles')}` : ''}
-${safeGet(analysis, 'summary.documentationFiles') ? `- **${labels.documentationFiles}**: ${safeGet(analysis, 'summary.documentationFiles')}` : ''}
-
-${architectureSection}
-
-${labels.ragOptimization}
-
-**${labels.includedPaths}**
-${analysis.ragOptimization.directoryStructure.includePaths.map((path: string) => `- \`${path}\``).join('\n')}
-
-**${labels.excludedPaths}**
-${analysis.ragOptimization.directoryStructure.excludePaths.map((path: string) => `- \`${path}\``).join('\n')}
-
-### 📚 ${labels.discoveredDocumentation || 'Discovered Documentation'}
-
-**${labels.recommendedDocPaths || 'Recommended Documentation Paths'}**
-${
-  safeGet(analysis, 'ragOptimization.documentationFiles.recommendedPaths', [])
-    .map((path: string) => `- \`${path}\``)
-    .join('\n') || '- README.md\n- docs/**/*.md'
-}
-
-**${labels.docChunkingStrategy || 'Documentation Chunking Strategy'}**: ${safeGet(analysis, 'ragOptimization.documentationFiles.chunkingStrategy', 'semantic-markdown')}
-**${labels.docChunkSize || 'Documentation Chunk Size'}**: ${safeGet(analysis, 'ragOptimization.documentationFiles.recommendedChunkSize', 1200)}
-**${labels.docChunkOverlap || 'Documentation Chunk Overlap'}**: ${safeGet(analysis, 'ragOptimization.documentationFiles.recommendedChunkOverlap', 200)}
-
-**Discovered Documentation Files**
-${
-  safeGet(analysis, 'ragOptimization.documentationFiles.discoveredPaths', [])
-    .slice(0, 10)
-    .map((path: string) => `- \`${path}\``)
-    .join('\n') || '_No documentation files found_'
-}
-
-**${labels.indexingConfig}**
-- **${labels.strategy}**: ${analysis.ragOptimization.chunkingStrategy}
-- **${labels.chunkSize}**: ${analysis.ragOptimization.recommendedIndexingConfig.chunkSize}
-- **${labels.chunkOverlap}**: ${analysis.ragOptimization.recommendedIndexingConfig.chunkOverlap}
-${safeGet(analysis, 'ragOptimization.estimatedIndexSize') ? `- **${labels.estimatedSize}**: ${safeGet(analysis, 'ragOptimization.estimatedIndexSize')}` : ''}
-
-${priorityFilesSection}${languageExclusionsSection}${labels.sensitiveFiles}
-${
-  analysis.ragOptimization.directoryStructure.excludePaths.filter(
-    (path) =>
-      path.includes('.env') ||
-      path.includes('secret') ||
-      path.includes('key') ||
-      path.includes('credential')
-  ).length > 0
-    ? analysis.ragOptimization.directoryStructure.excludePaths
-        .filter(
-          (path) =>
-            path.includes('.env') ||
-            path.includes('secret') ||
-            path.includes('key') ||
-            path.includes('credential')
-        )
-        .map((path: string) => `- \`${path}\` ⚠️`)
-        .join('\n')
-    : labels.noSensitiveFiles
-}
-
----
-
-${labels.techStack}
-
-${labels.detectedLanguages}
-${analysis.languages
-  .map(
-    (lang) =>
-      `- **${lang.name}**: ${lang.files} ${labels.files} (${lang.confidence}% ${labels.confidenceLabel})`
-  )
-  .join('\n')}
-
-${labels.frameworks}
-${analysis.frameworks
-  .map(
-    (fw) =>
-      `- **${fw.name}** (${fw.language}): ${fw.version || labels.unknownVersion}${fw.category ? ` - ${fw.category}` : ''}`
-  )
-  .join('\n')}
-
-${packageManagersSection}${dependenciesSection}${toolsSection}---
-
-${labels.recommendations}
-
-${labels.modernization}
-${analysis.recommendations.modernization.map((rec: string) => `- ${rec}`).join('\n')}
-
-${labels.security}
-${analysis.recommendations.security.map((rec: string) => `- ${rec}`).join('\n')}
-
-${labels.performance}
-${analysis.recommendations.performance.map((rec: string) => `- ${rec}`).join('\n')}
-
-${
-  safeGet(analysis, 'recommendations.tooling')
-    ? `
-${labels.tooling}
-${safeGet(analysis, 'recommendations.tooling', [])
-  .map((rec: string) => `- ${rec}`)
-  .join('\n')}
-`
-    : ''
-}
-
-${
-  safeGet(analysis, 'recommendations.documentation')
-    ? `
-${labels.documentation}
-${safeGet(analysis, 'recommendations.documentation', [])
-  .map((rec: string) => `- ${rec}`)
-  .join('\n')}
-`
-    : ''
-}
-
----
-
-${labels.reportGenerated} v${analysis.metadata.version} ${isPortuguese ? 'em' : 'at'} ${timestamp}_
+*Report generated by CLIA v1.0.0 at ${timestamp}*
 `;
   } catch (error) {
-    // Se der erro na geração do relatório, retornar uma versão simplificada
+    const errorMessage = error instanceof Error ? error.message : String(error);
     return `# Project Inspection Report
 
 **Project**: ${analysis.metadata?.projectName || 'Unknown'}
 **Generated**: ${new Date().toISOString()}
-**Error**: Report generation failed: ${error}
+**Error**: Report generation failed: ${errorMessage}
 
 ## Summary
 - **Primary Language**: ${analysis.summary.primaryLanguage}
@@ -1699,7 +1256,7 @@ ${labels.reportGenerated} v${analysis.metadata.version} ${isPortuguese ? 'em' : 
 **Chunk Size**: ${analysis.ragOptimization.recommendedIndexingConfig.chunkSize}
 **Chunk Overlap**: ${analysis.ragOptimization.recommendedIndexingConfig.chunkOverlap}
 
-_Simplified report due to generation error_
+*Simplified report due to generation error*
 `;
   }
 }
