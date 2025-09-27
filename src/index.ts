@@ -1,36 +1,37 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
-import { loadConfig } from './config.js';
-import { refactor } from './commands/refactor.js';
-import { makeEmbeddings } from './embeddings/provider.js';
-import { buildIndex } from './rag/index.js';
-import { trelloCommands } from './commands/trello.js';
+import { readFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { registerAnalyzeCommand } from './commands/analyze.js';
+import { askCommand } from './commands/ask.js';
+import { commitCommand } from './commands/commit.js';
+import { configureCommand } from './commands/configure.js';
+import { installCommand } from './commands/install.js';
+import { inspectCommand } from './commands/inspect.js';
+import { ragCommand } from './commands/rag.js';
+import { reviewCommand } from './commands/review.js';
+import { securityScanCommand } from './commands/security-scan.js';
+import { stackCommand } from './commands/stack.js';
+
+// Get version from package.json
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const packageJson = JSON.parse(readFileSync(join(__dirname, '../package.json'), 'utf-8'));
+const version = packageJson.version;
 
 const program = new Command();
-program.name('clia').description('Dev CLI with LLM, RAG, Trello and plugins').version('0.2.0');
+program.name('clia').description('Dev CLI with LLM, RAG, Trello and plugins').version(version);
 
-program
-  .command('refatore')
-  .argument('<file>', 'arquivo alvo, ex.: src/users.ts')
-  .argument('[instruction...]', 'instrução')
-  .action(async (file: string, instruction: string[]) => {
-    const instr = instruction.join(' ').trim() || 'Refatore melhorando legibilidade e extraindo funções.';
-    const msg = await refactor(file, instr);
-    console.log(msg);
-  });
-
-program
-  .command('rag')
-  .description('Indexa documentos locais')
-  .action(async () => {
-    const cfg = loadConfig();
-    const rag = cfg.project.rag;
-    const embedder = await makeEmbeddings(rag);
-    const indexPath = await buildIndex(process.cwd(), rag.paths, rag.excludeGlobs, rag.chunkSize, rag.chunkOverlap, embedder);
-    console.log('Index salvo em:', indexPath);
-    console.log('Embeddings provider:', embedder.name);
-  });
-
-program.addCommand(trelloCommands());
+registerAnalyzeCommand(program);
+program.addCommand(askCommand());
+program.addCommand(commitCommand());
+program.addCommand(configureCommand());
+program.addCommand(installCommand());
+program.addCommand(inspectCommand());
+program.addCommand(ragCommand());
+program.addCommand(reviewCommand());
+program.addCommand(securityScanCommand());
+program.addCommand(stackCommand());
 
 program.parseAsync(process.argv);
