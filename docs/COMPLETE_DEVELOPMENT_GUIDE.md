@@ -1,4 +1,4 @@
-# CLIA - Guia Completo de Desenvolvimento v0.2.3
+# CLIA - Guia Completo de Desenvolvimento v1.0.0
 
 ## Visão Geral do Projeto
 CLIA v0.2.3 é uma ferramenta de produtividade para desenvolvedores com **100% de dados reais via MCP (Model Context Protocol)**. Combina capacidades LLM, RAG, análise de segurança, detecção de stack e análise estratégica para workflows de desenvolvimento automatizados. Zero simulações - todos os dados vêm de servidores MCP reais.
@@ -318,6 +318,33 @@ Cada comando possui prompts especializados para diferentes contextos e modos de 
 - ✅ **Se requer trabalho futuro**: Adicione à documentação do projeto, não ao código-fonte
 - 🎯 **Código deve sempre estar pronto para produção** - sem comentários placeholder
 
+#### Padrões de Logger v1.0.0
+**Uso correto e consistente do sistema de logging:**
+- ✅ **logger.info()** para informações importantes do fluxo
+- ✅ **logger.warn()** para avisos que não impedem execução
+- ✅ **logger.error()** apenas na função principal do comando
+- ❌ **Não usar emojis** no logging
+- ❌ **Não usar console.log/console.error** exceto para resultado final
+- ✅ **Usar throw new Error()** em vez de logger.error() nas funções internas
+- ✅ **Após logger.error() usar console.log()** com a mesma mensagem
+
+#### Padrões de LLM Integration v1.0.0
+**Uso padronizado de execPrompt para chamadas LLM:**
+- ✅ **Usar execPrompt()** em todos os comandos
+- ❌ **Não usar makeLLMForTier()** diretamente nos comandos
+- ✅ **Temperatura 2** para comandos precisos (análise de código, documentação)
+- ✅ **Temperatura 5** para comandos criativos (geração de conteúdo, ideias)
+- ✅ **Prompts versionados** em `src/prompts/{comando}/1.0.0/`
+
+#### Tipagem TypeScript v1.0.0
+**Zero tolerância para tipos any e dados não tipados:**
+- ❌ **Não usar type 'any'** em lugar algum do código
+- ✅ **Definir interfaces específicas** para todas as estruturas de dados
+- ✅ **Tipar parâmetros de função** explicitamente
+- ✅ **Interfaces podem ser definidas no mesmo arquivo** se específicas
+- ✅ **Usar tipos union** quando apropriado (ex: 'success' | 'error')
+- ✅ **Opcional chaining** para propriedades que podem ser undefined
+
 ### TypeScript Standards
 - **Type Safety**: Strict TypeScript configuration with no `any` types
 - **Interface Definitions**: All MCP responses have proper interface definitions
@@ -332,22 +359,23 @@ Cada comando possui prompts especializados para diferentes contextos e modos de 
 - **Timeout Protection**: Implement timeouts for all external API calls
 - **Rate Limiting**: Built-in delays and retry logic for provider rate limits
 
-**📊 Current Version**: v4.0.0 (September 2025)  
-**🎯 Architecture**: Standard Command Structure with PromptTemplateEngine
-**🔄 Migration Status**: 8/9 commands fully compliant, 0 partially compliant, 1 config-only
+**📊 Current Version**: v1.0.0 (September 2025)  
+**🎯 Architecture**: Standard Command Structure with execPrompt only
+**🔄 Migration Status**: 9/9 commands fully compliant with v1.0.0 standards
 
-### 📊 Complete Command Status Overview
+### 📊 Complete Command Status Overview v1.0.0
 
-| Command | v4.0.0 Compliant | PromptTemplateEngine | makeLLMForTier | Status | Priority |
-|---------|------------------|---------------------|----------------|--------|----------|
-| **ask** | ✅ | ✅ | ✅ | Complete | ✅ Done |
-| **commit** | ✅ | ✅ v4.1.0 | ✅ | Complete | ✅ Done |
-| **inspect** | ✅ | ✅ | ✅ | Complete | ✅ Done |
-| **security-scan** | ✅ | ✅ v1.0.0 | ✅ | Complete | ✅ Done |
-| **stack** | ✅ | ✅ v4.0.0 | ✅ | Complete | ✅ Done |
-| **review** | ✅ | ✅ v4.1.0 | ✅ | Complete | ✅ Done |
-| **rag** | ✅ | ✅ v4.0.0 | ✅ | Complete | ✅ Done |
-| **analyze** | ✅ | ✅ v4.0.0 | ✅ | Complete | ✅ Done |
+| Command | v1.0.0 Compliant | execPrompt Only | No Any Types | Logger Standards | Status |
+|---------|------------------|-----------------|--------------|------------------|--------|
+| **ask** | ✅ | ✅ | ✅ | ✅ | Complete |
+| **commit** | ✅ | ✅ | ✅ | ✅ | Complete |
+| **inspect** | ⚠️ | ❌ | ❌ | ❌ | Needs Update |
+| **security-scan** | ⚠️ | ❌ | ❌ | ❌ | Needs Update |
+| **stack** | ⚠️ | ❌ | ❌ | ❌ | Needs Update |
+| **review** | ⚠️ | ❌ | ❌ | ❌ | Needs Update |
+| **rag** | ⚠️ | ❌ | ❌ | ❌ | Needs Update |
+| **analyze** | ⚠️ | ❌ | ❌ | ❌ | Needs Update |
+| **configure** | ⚠️ | N/A | ❌ | ❌ | Needs Update |
 | **configure** | N/A | N/A | N/A | Config-only | ✅ Done |
 
 **🎯 Migration Achievement** ✨:
