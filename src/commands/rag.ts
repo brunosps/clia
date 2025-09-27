@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { loadConfig, Config } from '../config.js';
 import { getLogger } from '../shared/logger.js';
-import { makeEmbeddings } from '../embeddings/provider.js';
+import { makeEmbeddings, type Embeddings } from '../embeddings/provider.js';
 import {
   ensureRagDatabase,
   retrieveForFiles,
@@ -51,33 +51,15 @@ export function ragCommand(): Command {
   const cmd = new Command('rag');
 
   cmd.description(
-    `🧠 RAG System v1.0.0
-
-Intelligent document indexing and semantic search system
-following conventional patterns with Standard Command Structure.
-
-Features:
-  • Smart document indexing with chunking
-  • Semantic search with embeddings  
-  • Smart rebuild - only changed files (default)
-  • Full rebuild option when needed
-  • Project-optimized configurations
-  • Technical statistics and management
-  • Standard Command Structure v1.0.0
-
-Examples:
-  clia rag index
-  clia rag query "authentication setup"
-  clia rag stats
-  clia rag clear --force`
+    'Intelligent document indexing and semantic search system with smart chunking and embeddings'
   );
 
   cmd
     .command('index')
-    .description('📚 Index documents for RAG search')
-    .option('--rebuild', '🔄 Force complete index rebuild', false)
-    .option('--smart-rebuild', '🧠 Rebuild only changed files (default)', false)
-    .option('--local-only', '💻 Use only local text search', false)
+    .description('Index documents for RAG search')
+    .option('--rebuild', 'Force complete index rebuild', false)
+    .option('--smart-rebuild', 'Rebuild only changed files (default)', false)
+    .option('--local-only', 'Use only local text search', false)
     .action(async (options: RagOptions & { smartRebuild?: boolean }) => {
       const logger = getLogger();
       try {
@@ -86,36 +68,37 @@ Examples:
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
-        logger.error(`❌ Index operation failed: ${errorMessage}`);
+        logger.error(`Index operation failed: ${errorMessage}`);
+        console.log(`Index operation failed: ${errorMessage}`);
         process.exit(1);
       }
     });
 
   cmd
     .command('query')
-    .description('🔍 Search in RAG database')
-    .argument('<query>', '🔍 Search query text')
-    .option('-k, --limit <number>', '🔢 Maximum results to return', '6')
-    .option('--files <pattern>', '📁 Filter by file pattern', '')
-    .option('--format <type>', '📋 Output format: text|json', 'text')
+    .description('Search in RAG database')
+    .argument('<query>', 'Search query text')
+    .option('-k, --limit <number>', 'Maximum results to return', '6')
+    .option('--files <pattern>', 'Filter by file pattern', '')
+    .option('--format <type>', 'Output format: text|json', 'text')
     .option(
       '--enhanced',
-      '🧠 Use enhanced retrieval with query expansion and re-ranking',
-      false
+      'Use enhanced retrieval with query expansion and re-ranking',
+      true
     )
     .option(
       '--strategy <type>',
-      '⚡ Retrieval strategy: basic|enhanced|hybrid',
+      'Retrieval strategy: basic|enhanced|hybrid',
       'hybrid'
     )
-    .option('--no-expansion', '❌ Disable query expansion (enhanced mode only)')
+    .option('--no-expansion', 'Disable query expansion (enhanced mode only)')
     .option(
       '--no-reranking',
-      '❌ Disable advanced re-ranking (enhanced mode only)'
+      'Disable advanced re-ranking (enhanced mode only)'
     )
     .option(
       '--min-similarity <number>',
-      '📊 Minimum similarity threshold (enhanced mode)',
+      'Minimum similarity threshold (enhanced mode)',
       '0.5'
     )
     .action(async (query: string, options: QueryOptions) => {
@@ -125,15 +108,16 @@ Examples:
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
-        logger.error(`❌ Query operation failed: ${errorMessage}`);
+        logger.error(`Query operation failed: ${errorMessage}`);
+        console.log(`Query operation failed: ${errorMessage}`);
         process.exit(1);
       }
     });
 
   cmd
     .command('stats')
-    .description('📊 Show RAG system statistics')
-    .option('--detailed', '🔍 Show detailed statistics', false)
+    .description('Show RAG system statistics')
+    .option('--detailed', 'Show detailed statistics', false)
     .action(async (options: RagOptions) => {
       const logger = getLogger();
       try {
@@ -141,15 +125,16 @@ Examples:
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
-        logger.error(`❌ Stats operation failed: ${errorMessage}`);
+        logger.error(`Stats operation failed: ${errorMessage}`);
+        console.log(`Stats operation failed: ${errorMessage}`);
         process.exit(1);
       }
     });
 
   cmd
     .command('clear')
-    .description('🗑️ Clear RAG index')
-    .option('--force', '⚠️ Skip confirmation prompt', false)
+    .description('Clear RAG index')
+    .option('--force', 'Skip confirmation prompt', false)
     .action(async (options: RagOptions) => {
       const logger = getLogger();
       try {
@@ -157,7 +142,8 @@ Examples:
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
-        logger.error(`❌ Clear operation failed: ${errorMessage}`);
+        logger.error(`Clear operation failed: ${errorMessage}`);
+        console.log(`Clear operation failed: ${errorMessage}`);
         process.exit(1);
       }
     });
@@ -169,20 +155,20 @@ async function processIndexOperation(options: RagOptions): Promise<void> {
   const config = await loadConfig();
   const logger = getLogger();
 
-  logger.info('🧠 Starting RAG indexing operation');
+  logger.info('Starting RAG indexing operation');
 
   const projectConfig = loadProjectInspectionConfig();
   const ragConfig = mergeRagConfigurations(config, projectConfig);
 
   if (projectConfig) {
-    logger.info('✅ Using optimized configuration from project inspection');
+    logger.info('Using optimized configuration from project inspection');
   }
 
   const baseDir = process.cwd();
   const ragDir = path.join(baseDir, '.clia', 'rag');
 
   if (options.rebuild && fs.existsSync(ragDir)) {
-    logger.info('🔄 Removing existing index for rebuild');
+    logger.info('Removing existing index for rebuild');
     fs.rmSync(ragDir, { recursive: true, force: true });
   }
 
@@ -193,7 +179,7 @@ async function processIndexOperation(options: RagOptions): Promise<void> {
       options.rebuild || false,
       useIncremental
     );
-    logger.info('✅ RAG indexing completed successfully');
+    logger.info('RAG indexing completed successfully');
   } catch (error) {
     if (
       error instanceof Error &&
@@ -202,17 +188,15 @@ async function processIndexOperation(options: RagOptions): Promise<void> {
         error.message.includes('illegal operation on a directory'))
     ) {
       logger.warn(
-        '⚠️ HNSWLib not available in global installation, but embeddings were processed successfully'
+        'HNSWLib not available in global installation, but embeddings were processed successfully'
       );
-      logger.info(
-        '✅ RAG indexing completed with filename-based search fallback'
-      );
+      logger.info('RAG indexing completed with filename-based search fallback');
       return;
     }
 
-    logger.info('🔄 Falling back to local-only indexing');
+    logger.info('Falling back to local-only indexing');
     await buildLocalIndex(ragConfig);
-    logger.info('✅ Local RAG indexing completed');
+    logger.info('Local RAG indexing completed');
   }
 }
 
@@ -227,7 +211,7 @@ async function processQueryOperation(
     throw new Error('RAG database not found. Run "clia rag index" first');
   }
 
-  logger.info(`🔍 Searching for: "${query}"`);
+  logger.info(`Searching for: "${query}"`);
 
   const embedder = await makeEmbeddings(config.project?.rag || {}, config);
   const limit = parseInt(String(options.limit)) || 6;
@@ -265,15 +249,15 @@ async function processQueryOperation(
       JSON.stringify({ query, results, count: results.length }, null, 2)
     );
   } else {
-    console.log(`\n🔍 Query: "${query}"`);
-    console.log(`📊 Found ${results.length} relevant chunks\n`);
+    console.log(`\nQuery: "${query}"`);
+    console.log(`Found ${results.length} relevant chunks\n`);
 
     results.forEach((result: string, index: number) => {
       console.log(`${index + 1}. ${result}\n${'---'.repeat(20)}\n`);
     });
   }
 
-  logger.info(`✅ Query completed: ${results.length} results found`);
+  logger.info(`Query completed: ${results.length} results found`);
 }
 
 async function processStatsOperation(options: RagOptions): Promise<void> {
@@ -313,14 +297,14 @@ async function processStatsOperation(options: RagOptions): Promise<void> {
   console.log(`📅 Last Updated: ${new Date(stats.createdAt).toLocaleString()}`);
 
   if (options.detailed) {
-    console.log('\n🔍 Detailed Information');
+    console.log('\nDetailed Information');
     console.log('-'.repeat(30));
-    console.log(`📁 RAG Directory: ${ragDir}`);
-    console.log(`📊 Manifest: ${manifest ? 'Present' : 'Missing'}`);
-    console.log(`🗃️ Metadata Entries: ${metadata.size}`);
+    console.log(`RAG Directory: ${ragDir}`);
+    console.log(`Manifest: ${manifest ? 'Present' : 'Missing'}`);
+    console.log(`Metadata Entries: ${metadata.size}`);
   }
 
-  logger.info('✅ Stats operation completed');
+  logger.info('Stats operation completed');
 }
 
 async function processClearOperation(options: RagOptions): Promise<void> {
@@ -329,13 +313,13 @@ async function processClearOperation(options: RagOptions): Promise<void> {
   const ragDir = path.join(baseDir, '.clia', 'rag');
 
   if (!fs.existsSync(ragDir)) {
-    logger.info('ℹ️ No RAG index to clear');
+    logger.info('No RAG index to clear');
     return;
   }
 
   if (!options.force) {
-    console.log('⚠️ This will permanently delete the RAG index.');
-    console.log('🔄 You can rebuild it with: clia rag index');
+    console.log('This will permanently delete the RAG index.');
+    console.log('You can rebuild it with: clia rag index');
 
     const readline = await import('readline');
     const rl = readline.createInterface({
@@ -350,16 +334,16 @@ async function processClearOperation(options: RagOptions): Promise<void> {
     rl.close();
 
     if (answer.toLowerCase() !== 'y' && answer.toLowerCase() !== 'yes') {
-      logger.info('❌ Operation cancelled by user');
+      logger.info('Operation cancelled by user');
       return;
     }
   }
 
   fs.rmSync(ragDir, { recursive: true, force: true });
-  logger.info('✅ RAG index cleared successfully');
+  logger.info('RAG index cleared successfully');
 }
 
-function loadProjectInspectionConfig(): any {
+function loadProjectInspectionConfig(): Record<string, unknown> | null {
   const inspectionPath = path.join(
     process.cwd(),
     '.clia',
@@ -376,23 +360,40 @@ function loadProjectInspectionConfig(): any {
 
     const logger = getLogger();
     logger.info(
-      `📊 Loaded project inspection: ${data.summary?.totalFiles || 'unknown'} files detected`
+      `Loaded project inspection: ${(data as Record<string, unknown>)?.summary ? ((data as Record<string, unknown>).summary as Record<string, unknown>)?.totalFiles || 'unknown' : 'unknown'} files detected`
     );
 
-    if (data.ragOptimization?.directoryStructure?.includePaths) {
-      logger.info(
-        `📁 Using inspect-optimized paths: ${data.ragOptimization.directoryStructure.includePaths.join(', ')}`
-      );
+    const ragOpt = (data as Record<string, unknown>)?.ragOptimization as Record<
+      string,
+      unknown
+    >;
+    if (ragOpt?.directoryStructure) {
+      const dirStruct = ragOpt.directoryStructure as Record<string, unknown>;
+      const includePaths = dirStruct.includePaths as string[];
+      if (includePaths) {
+        logger.info(
+          `Using inspect-optimized paths: ${includePaths.join(', ')}`
+        );
+      }
     }
-    
-    if (data.ragOptimization?.documentationFiles?.discoveredPaths?.length > 0) {
-      logger.info(
-        `📚 Found ${data.ragOptimization.documentationFiles.discoveredPaths.length} documentation files to index`
-      );
+
+    if (ragOpt?.documentationFiles) {
+      const docFiles = ragOpt.documentationFiles as Record<string, unknown>;
+      const discoveredPaths = docFiles.discoveredPaths as string[];
+      if (discoveredPaths && discoveredPaths.length > 0) {
+        logger.info(
+          `Found ${discoveredPaths.length} documentation files to index`
+        );
+      }
     }
-    
-    if (data.structure?.directories) {
-      const sourceDirs = data.structure.directories.filter(
+
+    const structure = (data as Record<string, unknown>)?.structure as Record<
+      string,
+      unknown
+    >;
+    if (structure?.directories) {
+      const directories = structure.directories as string[];
+      const sourceDirs = directories.filter(
         (dir: string) =>
           dir.startsWith('src') ||
           dir.startsWith('docs') ||
@@ -400,7 +401,7 @@ function loadProjectInspectionConfig(): any {
       );
       if (sourceDirs.length > 0) {
         logger.info(
-          `📁 Using detected source directories: ${sourceDirs.join(', ')}`
+          `Using detected source directories: ${sourceDirs.join(', ')}`
         );
       }
     }
@@ -433,7 +434,10 @@ function calculateIndexSize(ragDir: string): number {
   }
 }
 
-function mergeRagConfigurations(config: Config, projectConfig?: any): any {
+function mergeRagConfigurations(
+  config: Config,
+  projectConfig?: Record<string, unknown> | null
+): Record<string, unknown> {
   const defaultConfig = {
     includes: ['src/**', 'docs/**', '*.md'],
     excludes: [
@@ -451,43 +455,58 @@ function mergeRagConfigurations(config: Config, projectConfig?: any): any {
   };
 
   if (projectConfig?.ragOptimization) {
-    const ragOpt = projectConfig.ragOptimization;
-    const discoveredDocs = ragOpt.documentationFiles?.discoveredPaths || [];
-    const recommendedDocs = ragOpt.documentationFiles?.recommendedPaths || [];
+    const ragOpt = projectConfig.ragOptimization as Record<string, unknown>;
+    const docFiles = ragOpt.documentationFiles as Record<string, unknown>;
+    const dirStruct = ragOpt.directoryStructure as Record<string, unknown>;
+    const indexConfig = ragOpt.recommendedIndexingConfig as Record<
+      string,
+      unknown
+    >;
+
+    const discoveredDocs = (docFiles?.discoveredPaths as string[]) || [];
+    const recommendedDocs = (docFiles?.recommendedPaths as string[]) || [];
     const allDocPaths = [...new Set([...discoveredDocs, ...recommendedDocs])];
-    
+
     const includes = [
-      ...(ragOpt.directoryStructure?.includePaths || defaultConfig.includes),
+      ...((dirStruct?.includePaths as string[]) || defaultConfig.includes),
       ...allDocPaths,
     ];
-    
+
     return {
       includes,
       excludes: [
         ...defaultConfig.excludes,
-        ...(ragOpt.directoryStructure?.excludePaths || []),
+        ...((dirStruct?.excludePaths as string[]) || []),
       ],
-      chunkSize:
-        ragOpt.recommendedIndexingConfig?.chunkSize || defaultConfig.chunkSize,
+      chunkSize: (indexConfig?.chunkSize as number) || defaultConfig.chunkSize,
       chunkOverlap:
-        ragOpt.recommendedIndexingConfig?.chunkOverlap ||
-        defaultConfig.chunkOverlap,
+        (indexConfig?.chunkOverlap as number) || defaultConfig.chunkOverlap,
       documentationConfig: {
-        chunkSize: ragOpt.documentationFiles?.recommendedChunkSize || 1200,
-        chunkOverlap: ragOpt.documentationFiles?.recommendedChunkOverlap || 200,
-        strategy: ragOpt.documentationFiles?.chunkingStrategy || 'semantic-markdown',
+        chunkSize: (docFiles?.recommendedChunkSize as number) || 1200,
+        chunkOverlap: (docFiles?.recommendedChunkOverlap as number) || 200,
+        strategy: (docFiles?.chunkingStrategy as string) || 'semantic-markdown',
         patterns: allDocPaths,
       },
     };
   }
 
-  if (projectConfig?.structure?.directories && projectConfig?.summary) {
-    const sourceFiles = projectConfig.structure.sourceFiles || [];
-    const priorityFiles = projectConfig.ragOptimization?.priorityFiles || [];
-    const excludePatterns =
-      projectConfig.ragOptimization?.filePatterns?.exclude || [];
+  const structure = projectConfig?.structure as Record<string, unknown>;
+  const summary = projectConfig?.summary as Record<string, unknown>;
+  const ragOpt = projectConfig?.ragOptimization as Record<string, unknown>;
 
-    const detectedIncludes = projectConfig.structure.directories
+  if (structure?.directories && summary) {
+    const directories = structure.directories as string[];
+    const sourceFiles = (structure.sourceFiles as string[]) || [];
+    const priorityFiles = (ragOpt?.priorityFiles as string[]) || [];
+    const filePatterns = ragOpt?.filePatterns as Record<string, unknown>;
+    const excludePatterns = (filePatterns?.exclude as string[]) || [];
+    const indexConfig = ragOpt?.recommendedIndexingConfig as Record<
+      string,
+      unknown
+    >;
+    const totalFiles = summary.totalFiles as number;
+
+    const detectedIncludes = directories
       .filter(
         (dir: string) =>
           dir.startsWith('src') ||
@@ -503,12 +522,9 @@ function mergeRagConfigurations(config: Config, projectConfig?: any): any {
           : defaultConfig.includes,
       excludes: [...defaultConfig.excludes, ...excludePatterns],
       chunkSize:
-        projectConfig.ragOptimization?.recommendedIndexingConfig?.chunkSize ||
-        (projectConfig.summary?.totalFiles > 200 ? 1000 : 800),
+        (indexConfig?.chunkSize as number) || (totalFiles > 200 ? 1000 : 800),
       chunkOverlap:
-        projectConfig.ragOptimization?.recommendedIndexingConfig
-          ?.chunkOverlap ||
-        (projectConfig.summary?.totalFiles > 200 ? 200 : 120),
+        (indexConfig?.chunkOverlap as number) || (totalFiles > 200 ? 200 : 120),
       priorityFiles: priorityFiles,
     };
   }
@@ -526,45 +542,48 @@ function mergeRagConfigurations(config: Config, projectConfig?: any): any {
 }
 
 async function buildEmbeddingIndex(
-  ragConfig: any,
+  ragConfig: Record<string, unknown>,
   forceRebuild: boolean,
   useIncremental: boolean = true
 ): Promise<void> {
   const config = await loadConfig();
   const embedder = await makeEmbeddings(config.project?.rag || {}, config);
-  
+
   if (ragConfig.documentationConfig) {
     const logger = getLogger();
+    const docConfig = ragConfig.documentationConfig as Record<string, unknown>;
     logger.info(
-      `📚 Using documentation-specific chunking: ${ragConfig.documentationConfig.chunkSize}/${ragConfig.documentationConfig.chunkOverlap}`
+      `Using documentation-specific chunking: ${docConfig.chunkSize}/${docConfig.chunkOverlap}`
     );
   }
 
   await ensureRagDatabase(
     process.cwd(),
-    ragConfig.includes,
-    ragConfig.excludes,
-    ragConfig.chunkSize,
-    ragConfig.chunkOverlap,
+    ragConfig.includes as string[],
+    ragConfig.excludes as string[],
+    ragConfig.chunkSize as number,
+    ragConfig.chunkOverlap as number,
     embedder,
     !forceRebuild && useIncremental,
-    ragConfig.documentationConfig
+    ragConfig.documentationConfig as Record<string, unknown>
   );
 }
 
-async function buildLocalIndex(ragConfig: any): Promise<void> {
+async function buildLocalIndex(
+  ragConfig: Record<string, unknown>
+): Promise<void> {
   const config = await loadConfig();
   const embedder = await makeEmbeddings(config.project?.rag || {}, config);
 
   await ensureRagDatabase(
     process.cwd(),
-    ragConfig.includes,
-    ragConfig.excludes,
-    ragConfig.chunkSize,
-    ragConfig.chunkOverlap,
+    ragConfig.includes as string[],
+    ragConfig.excludes as string[],
+    ragConfig.chunkSize as number,
+    ragConfig.chunkOverlap as number,
     embedder,
     false,
-    ragConfig.documentationConfig
+    ragConfig.documentationConfig as Record<string, unknown>
   );
 }
 
@@ -572,7 +591,7 @@ async function processEnhancedQuery(
   query: string,
   options: QueryOptions,
   config: Config,
-  embedder: any,
+  embedder: Embeddings,
   limit: number,
   filePattern: string
 ): Promise<void> {
@@ -586,7 +605,7 @@ async function processEnhancedQuery(
   }
 
   logger.info(
-    `🧠 Enhanced retrieval: strategy=${strategy}, expansion=${options.expansion !== false}, rerank=${options.reranking !== false}`
+    `Enhanced retrieval: strategy=${strategy}, expansion=${options.expansion !== false}, rerank=${options.reranking !== false}`
   );
 
   const enhancedResponse = await enhancedRetrieveForFiles(process.cwd(), {
@@ -624,37 +643,35 @@ async function processEnhancedQuery(
       )
     );
   } else {
-    console.log(`\n🧠 Enhanced Query: "${query}"`);
-    console.log(`🔧 Strategy: ${enhancedResponse.retrievalStrategy}`);
+    console.log(`\nEnhanced Query: "${query}"`);
+    console.log(`Strategy: ${enhancedResponse.retrievalStrategy}`);
     console.log(
-      `📊 Results: ${enhancedResponse.results.length} selected from ${enhancedResponse.totalFound} candidates`
+      `Results: ${enhancedResponse.results.length} selected from ${enhancedResponse.totalFound} candidates`
     );
+    console.log(`Average Score: ${enhancedResponse.averageScore.toFixed(3)}`);
     console.log(
-      `📈 Average Score: ${enhancedResponse.averageScore.toFixed(3)}`
-    );
-    console.log(
-      `🎯 Quality: ${enhancedResponse.qualityMetrics.confidenceLevel} confidence, diversity: ${(enhancedResponse.qualityMetrics.diversityScore * 100).toFixed(1)}%\n`
+      `Quality: ${enhancedResponse.qualityMetrics.confidenceLevel} confidence, diversity: ${(enhancedResponse.qualityMetrics.diversityScore * 100).toFixed(1)}%\n`
     );
 
     enhancedResponse.results.forEach((result, index) => {
       console.log(
-        `${index + 1}. 📄 ${result.source} (score: ${result.score.toFixed(3)})`
+        `${index + 1}. ${result.source} (score: ${result.score.toFixed(3)})`
       );
-      console.log(`   📈 Factors: ${result.relevanceFactors.join(', ')}`);
+      console.log(`   Factors: ${result.relevanceFactors.join(', ')}`);
       console.log(
-        `   📝 ${result.content.slice(0, 200)}${result.content.length > 200 ? '...' : ''}\n${'---'.repeat(20)}\n`
+        `   ${result.content.slice(0, 200)}${result.content.length > 200 ? '...' : ''}\n${'---'.repeat(20)}\n`
       );
     });
 
     if (enhancedResponse.qualityMetrics.confidenceLevel === 'low') {
-      console.log(`💡 Tips for better results:`);
-      console.log(`   • Try: --strategy enhanced (semantic-only)`);
-      console.log(`   • Try: --min-similarity 0.2 (broader search)`);
-      console.log(`   • Try: --limit 10 (more results)`);
+      console.log(`Tips for better results:`);
+      console.log(`   - Try: --strategy enhanced (semantic-only)`);
+      console.log(`   - Try: --min-similarity 0.2 (broader search)`);
+      console.log(`   - Try: --limit 10 (more results)`);
     }
   }
 
   logger.info(
-    `✅ Enhanced query completed: ${enhancedResponse.results.length} results, ${enhancedResponse.qualityMetrics.confidenceLevel} confidence`
+    `Enhanced query completed: ${enhancedResponse.results.length} results, ${enhancedResponse.qualityMetrics.confidenceLevel} confidence`
   );
 }
