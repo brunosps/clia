@@ -29,19 +29,16 @@ interface ReviewOptions {
 
 interface FileChange {
   filePath: string;
-  // content: string;
   changeType: string;
   diff?: string;
   ragContext: string;
 }
 
-// Context interfaces for each review stage
 interface FileAnalysisContext {
   target: string;
   mode: string;
   filePath: string;
   changeType: string;
-  // content: string;
   diff?: string;
   language: string;
   summary: string;
@@ -74,12 +71,11 @@ interface ConsolidationContext {
   timestamp: string;
 }
 
-// Response interfaces for each review stage
 interface FileAnalysisResponse {
   file_path: string;
   change_type: string;
   language: string;
-  group: string; // Files are grouped by functionality/component
+  group: string;
   analysis: {
     purpose: string;
     complexity_score: number;
@@ -152,8 +148,14 @@ interface ConsolidationResponse {
 
 export function reviewCommand(): Command {
   return new Command('review')
-    .description(
-      '🔍 Code review analysis with quality metrics and security assessment'
+    .description(`Code review analysis with quality metrics and security assessment
+Examples:
+  $ clia review                    # Review only staged files (git diff --cached)
+  $ clia review --commit abc123    # Review specific commit changes
+  $ clia review --tag v1.0.0       # Review changes in git tag
+  $ clia review --range HEAD~3..HEAD  # Review commit range
+  $ clia review --branch develop   # Review changes compared to branch
+Note: Without parameters, only staged files will be reviewed. Use --commit, --tag, or --range to review committed changes.`
     )
     .option('--commit <COMMIT>', 'Specific commit hash to review')
     .option('--tag <TAG>', 'Git tag to review')
@@ -172,7 +174,8 @@ export function reviewCommand(): Command {
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
-        logger.error('❌ Review command failed:', errorMessage);
+        await logger.error(`Review command failed: ${errorMessage}`);
+        console.log(`Review command failed: ${errorMessage}`);
         process.exit(1);
       }
     });
@@ -183,12 +186,12 @@ export async function runReviewCommand(options: ReviewOptions): Promise<void> {
   const logger = getLogger();
   const config = await loadConfig();
 
-  logger.info('🔍 Starting code review analysis');
+  logger.info('Starting code review analysis');
 
   const { mode, target, files } = await analyzeTarget(options);
 
   if (files.length === 0) {
-    logger.warn('⚠️ No reviewable files found');
+    logger.warn('No reviewable files found');
     return;
   }
 
@@ -317,13 +320,12 @@ async function processGitOutput(
 
       files.push({
         filePath,
-        // content: content,
         changeType,
         diff,
         ragContext: await getSourceAnalysis(filePath, processAskQuery),
       });
     } catch (error) {
-      // Silently skip problematic lines
+      continue;
     }
   }
 
@@ -386,8 +388,8 @@ async function collectContexts(files: FileChange[], config: Config) {
     ragContext = 'RAG context unavailable';
   }
 
-  let stackContext: any = null;
-  let projectContext: any = null;
+  let stackContext: Record<string, unknown> | null = null;
+  let projectContext: Record<string, unknown> | null = null;
   let securityContext = '';
 
   // Load stack analysis from file if available
@@ -412,7 +414,15 @@ async function collectContexts(files: FileChange[], config: Config) {
               (s: any) => s.type === 'tool' || s.type === 'package_manager'
             )
             ?.map((t: any) => t.name) || [],
-        primary_runtime: stackData.raw_stack_data?.primary?.name || 'Unknown',
+        primary_runtime:
+          ((
+            (
+              (stackData as Record<string, unknown>).raw_stack_data as Record<
+                string,
+                unknown
+              >
+            )?.primary as Record<string, unknown>
+          )?.name as string) || 'Unknown',
         confidence: 'high',
       };
     } else {
@@ -458,7 +468,10 @@ async function collectContexts(files: FileChange[], config: Config) {
       mcpClient.trivyScan(process.cwd()),
     ]);
 
-    const securityData: any = { findings: [], vulnerabilities: [] };
+    const securityData: Record<string, unknown> = {
+      findings: [],
+      vulnerabilities: [],
+    };
 
     if (semgrepResult.status === 'fulfilled') {
       securityData.semgrep = {
@@ -490,7 +503,12 @@ async function executeReview(
   mode: string,
   target: string,
   files: FileChange[],
-  context: any,
+  context: {
+    ragContext: string;
+    stackContext: Record<string, unknown> | null;
+    projectContext: Record<string, unknown> | null;
+    securityContext: string;
+  },
   config: Config,
   options: ReviewOptions
 ): Promise<{
@@ -502,7 +520,7 @@ async function executeReview(
   const timestamp = new Date().toISOString();
   const logger = getLogger();
 
-  logger.info(`📝 Analyzing ${files.length} files individually`);
+  logger.info(`Analyzing ${files.length} files individually`);
   const fileAnalyses: FileAnalysisResponse[] = [];
 
   for (const file of files) {
@@ -511,7 +529,6 @@ async function executeReview(
       mode,
       filePath: file.filePath,
       changeType: file.changeType,
-      // content: file.content,
       diff: file.diff,
       language: detectFileLanguage(file.filePath),
       summary: file.ragContext,
@@ -526,7 +543,7 @@ async function executeReview(
     const fileAnalysis = await execPrompt<
       FileAnalysisContext,
       FileAnalysisResponse
-    >('review/analyse-source', promptContext, '1.0.0', 'default', 7, 3);
+    >('review/analyse-source', promptContext, '1.0.0', 'default', 0.3);
 
     fileAnalyses.push(fileAnalysis);
   }
@@ -536,7 +553,7 @@ async function executeReview(
   const groupReviews: GroupAnalysisResponse[] = [];
 
   logger.info(
-    `📁 Analyzing ${Object.keys(groupedFiles).length} functional groups`
+    `Analyzing ${Object.keys(groupedFiles).length} functional groups`
   );
 
   for (const [groupName, groupFiles] of Object.entries(groupedFiles)) {
@@ -547,7 +564,8 @@ async function executeReview(
       fileAnalyses: groupFiles,
       stackContext: JSON.stringify(context.stackContext, null, 2),
       projectName:
-        context.projectContext?.metadata?.projectName ||
+        ((context.projectContext?.metadata as Record<string, unknown>)
+          ?.projectName as string) ||
         config.project?.name ||
         'Unknown Project',
       userLanguage: outputLanguage,
@@ -557,13 +575,13 @@ async function executeReview(
     const groupReview = await execPrompt<
       GroupAnalysisContext,
       GroupAnalysisResponse
-    >('review/analyse-review-group', promptContext, '1.0.0', 'default', 5, 3);
+    >('review/analyse-review-group', promptContext, '1.0.0', 'default', 0.3);
 
     groupReviews.push(groupReview);
   }
 
   // Step 3: Consolidate all reviews and provide final decision
-  logger.info('🎯 Consolidating review and generating final decision');
+  logger.info('Consolidating review and generating final decision');
 
   const promptContext: ConsolidationContext = {
     target,
@@ -572,7 +590,8 @@ async function executeReview(
     totalFiles: files.length,
     stackContext: JSON.stringify(context.stackContext, null, 2),
     projectName:
-      context.projectContext?.metadata?.projectName ||
+      ((context.projectContext?.metadata as Record<string, unknown>)
+        ?.projectName as string) ||
       config.project?.name ||
       'Unknown Project',
     userLanguage: outputLanguage,
@@ -587,8 +606,7 @@ async function executeReview(
     promptContext,
     '1.0.0',
     'default',
-    7,
-    3
+    0.3
   );
 
   return { consolidatedReview, groupReviews, fileAnalyses };
@@ -683,14 +701,14 @@ async function generateReports(
   if (options.output) {
     if (options.output.endsWith('.md')) {
       fs.writeFileSync(options.output, markdownContent, 'utf-8');
-      console.log(`📄 Markdown report saved: ${options.output}`);
+      console.log(`Markdown report saved: ${options.output}`);
     } else if (options.output.endsWith('.json')) {
       fs.writeFileSync(
         options.output,
         JSON.stringify(fullReviewData, null, 2),
         'utf-8'
       );
-      console.log(`📋 JSON report saved: ${options.output}`);
+      console.log(`JSON report saved: ${options.output}`);
     }
   } else {
     fs.writeFileSync(markdownFile, markdownContent, 'utf-8');
@@ -699,8 +717,8 @@ async function generateReports(
       JSON.stringify(fullReviewData, null, 2),
       'utf-8'
     );
-    console.log(`📄 Markdown report saved: ${markdownFile}`);
-    console.log(`📋 JSON report saved: ${jsonFile}`);
+    console.log(`Markdown report saved: ${markdownFile}`);
+    console.log(`JSON report saved: ${jsonFile}`);
   }
 }
 
@@ -711,12 +729,6 @@ function generateMarkdownReport(
   executionTime: number
 ): string {
   const decision = consolidatedReview.decision.recommendation;
-  const decisionEmoji =
-    decision === 'approve'
-      ? '✅'
-      : decision === 'request_changes'
-        ? '⚠️'
-        : '❌';
   const decisionText =
     decision === 'approve'
       ? 'APPROVE'
@@ -724,9 +736,9 @@ function generateMarkdownReport(
         ? 'REQUEST CHANGES'
         : 'REJECT';
 
-  let markdown = `# 🔍 Code Review Report\n\n`;
+  let markdown = `# Code Review Report\n\n`;
 
-  markdown += `## ${decisionEmoji} Decision: ${decisionText}\n\n`;
+  markdown += `## Decision: ${decisionText}\n\n`;
   markdown += `**Target**: ${consolidatedReview.review_summary.target}\n\n`;
   markdown += `**Mode**: ${consolidatedReview.review_summary.mode}\n\n`;
   markdown += `**Files Analyzed**: ${consolidatedReview.review_summary.total_files}\n\n`;
@@ -735,13 +747,13 @@ function generateMarkdownReport(
   markdown += `**Execution Time**: ${formatExecutionTime(executionTime)}\n\n`;
   markdown += `**Date**: ${new Date(consolidatedReview.review_summary.timestamp).toLocaleString()}\n\n`;
 
-  markdown += `## 📋 Summary\n\n`;
+  markdown += `## Summary\n\n`;
   markdown += `**Intention**: ${consolidatedReview.overall_assessment.intention}\n\n`;
   markdown += `**Approach Quality**: ${consolidatedReview.overall_assessment.approach_quality}\n\n`;
   markdown += `**Architectural Impact**: ${consolidatedReview.overall_assessment.architectural_impact}\n\n`;
   markdown += `**Overall Risk**: ${consolidatedReview.overall_assessment.overall_risk.toUpperCase()}\n\n`;
 
-  markdown += `## 📊 Quality Metrics\n\n`;
+  markdown += `## Quality Metrics\n\n`;
   markdown += `| Metric | Score |\n`;
   markdown += `|--------|-------|\n`;
   markdown += `| Security | ${consolidatedReview.consolidated_metrics.overall_security_score}/10 |\n`;
@@ -750,7 +762,7 @@ function generateMarkdownReport(
 
   // Add group details
   if (groupReviews.length > 0) {
-    markdown += `## 📁 Group Analysis\n\n`;
+    markdown += `## Group Analysis\n\n`;
     groupReviews.forEach((group) => {
       markdown += `### ${group.group_name}\n`;
       markdown += `**Purpose**: ${group.group_purpose}\n\n`;
@@ -761,7 +773,7 @@ function generateMarkdownReport(
   }
 
   if (consolidatedReview.decision.required_changes.length > 0) {
-    markdown += `## ❗ Required Changes\n\n`;
+    markdown += `## Required Changes\n\n`;
     consolidatedReview.decision.required_changes.forEach((change) => {
       markdown += `- ${change}\n`;
     });
@@ -769,7 +781,7 @@ function generateMarkdownReport(
   }
 
   if (consolidatedReview.decision.suggested_improvements.length > 0) {
-    markdown += `## 💡 Suggested Improvements\n\n`;
+    markdown += `## Suggested Improvements\n\n`;
     consolidatedReview.decision.suggested_improvements.forEach(
       (improvement) => {
         markdown += `- ${improvement}\n`;
@@ -778,7 +790,7 @@ function generateMarkdownReport(
     markdown += `\n`;
   }
 
-  markdown += `## 🎯 Decision Rationale\n\n`;
+  markdown += `## Decision Rationale\n\n`;
   markdown += `${consolidatedReview.decision.rationale}\n\n`;
 
   if (consolidatedReview.decision.next_steps.length > 0) {
@@ -790,7 +802,7 @@ function generateMarkdownReport(
   }
 
   markdown += `\n---\n\n`;
-  markdown += `## 📄 File-by-File Analysis\n\n`;
+  markdown += `## File-by-File Analysis\n\n`;
 
   if (fileAnalyses.length === 0) {
     markdown += `*No individual file analyses available.*\n\n`;
@@ -857,7 +869,7 @@ function generateMarkdownReport(
         }
 
         if (file.issues.maintainability_concerns.length > 0) {
-          markdown += `**🔧 Maintainability Concerns:**\n`;
+          markdown += `**Maintainability Concerns:**\n`;
           file.issues.maintainability_concerns.forEach((issue) => {
             markdown += `- ${issue}\n`;
           });
@@ -865,14 +877,14 @@ function generateMarkdownReport(
         }
 
         if (file.issues.performance_concerns.length > 0) {
-          markdown += `**⚡ Performance Concerns:**\n`;
+          markdown += `**Performance Concerns:**\n`;
           file.issues.performance_concerns.forEach((issue) => {
             markdown += `- ${issue}\n`;
           });
           markdown += `\n`;
         }
       } else {
-        markdown += `#### ✅ No Issues Found\n\n`;
+        markdown += `#### No Issues Found\n\n`;
         markdown += `This file passed all quality checks without significant issues.\n\n`;
       }
 
@@ -884,7 +896,7 @@ function generateMarkdownReport(
   }
 
   markdown += `\n---\n\n`;
-  markdown += `*Report generated by CLIA Review v4.1.0*\n`;
+  markdown += `*Report generated by CLIA Review v1.0.0*\n`;
   markdown += `*Execution time: ${formatExecutionTime(executionTime)}*\n`;
   markdown += `*Generated on: ${new Date().toLocaleString()}*\n`;
   return markdown;
@@ -895,45 +907,37 @@ function displaySummary(
   executionTime?: number
 ): void {
   const decision = consolidatedReview.decision.recommendation;
-  const decisionEmoji =
-    decision === 'approve'
-      ? '✅'
-      : decision === 'request_changes'
-        ? '⚠️'
-        : '❌';
 
-  console.log('\n🎯 Review Summary:');
-  console.log(`   ${decisionEmoji} Decision: ${decision.toUpperCase()}`);
+  console.log('\nReview Summary:');
+  console.log(`   Decision: ${decision.toUpperCase()}`);
   console.log(
-    `   📊 Final Score: ${consolidatedReview.consolidated_metrics.final_score}/10`
+    `   Final Score: ${consolidatedReview.consolidated_metrics.final_score}/10`
   );
-  console.log(`   📝 Files: ${consolidatedReview.review_summary.total_files}`);
+  console.log(`   Files: ${consolidatedReview.review_summary.total_files}`);
+  console.log(`   Groups: ${consolidatedReview.review_summary.total_groups}`);
   console.log(
-    `   📁 Groups: ${consolidatedReview.review_summary.total_groups}`
-  );
-  console.log(
-    `   🔒 Security: ${consolidatedReview.consolidated_metrics.overall_security_score}/10`
+    `   Security: ${consolidatedReview.consolidated_metrics.overall_security_score}/10`
   );
   console.log(
-    `   🧹 Code Quality: ${consolidatedReview.consolidated_metrics.overall_code_quality_score}/10`
+    `   Code Quality: ${consolidatedReview.consolidated_metrics.overall_code_quality_score}/10`
   );
   console.log(
-    `   🔧 Maintainability: ${consolidatedReview.consolidated_metrics.overall_maintainability_score}/10`
+    `   Maintainability: ${consolidatedReview.consolidated_metrics.overall_maintainability_score}/10`
   );
 
   if (executionTime) {
-    console.log(`   ⏱️ Execution Time: ${formatExecutionTime(executionTime)}`);
+    console.log(`   Execution Time: ${formatExecutionTime(executionTime)}`);
   }
 
   if (consolidatedReview.decision.required_changes.length > 0) {
     console.log(
-      `   ❗ Required Changes: ${consolidatedReview.decision.required_changes.length}`
+      `   Required Changes: ${consolidatedReview.decision.required_changes.length}`
     );
   }
 
   if (consolidatedReview.risk_analysis.critical_blockers.length > 0) {
     console.log(
-      `   🚫 Critical Blockers: ${consolidatedReview.risk_analysis.critical_blockers.length}`
+      `   Critical Blockers: ${consolidatedReview.risk_analysis.critical_blockers.length}`
     );
   }
 
