@@ -53,34 +53,17 @@ export function stackCommand(): Command {
   const cmd = new Command('stack');
 
   cmd
-    .description(
-      `
-📊 Technology Stack Analysis v4.0.0
-
-Intelligent system for technology stack detection and analysis
-following conventional patterns with Standard Command Structure.
-
-Features:
-  • MCP stack-detector integration for real detection
-  • AI-powered stack analysis and recommendations
-  • Human-readable reports with actionable insights
-  • Multi-format output (JSON, Markdown)
-  • Standard Command Structure v4.0.0
-
-Examples:
-  clia stack                             # Basic stack detection
-  clia stack --analyze                   # AI analysis with recommendations
-  clia stack --analyze --deep            # Deep analysis with premium LLM`
-    )
-    .option('--analyze', '🤖 Perform AI-powered analysis of detected stack', false)
-    .option('--deep', '🔍 Deep analysis with comprehensive recommendations (requires --analyze)', false)    
+    .description('Technology stack detection and analysis with AI-powered recommendations')
+    .option('--analyze', 'Perform AI-powered analysis of detected stack', false)
+    .option('--deep', 'Deep analysis with comprehensive recommendations (requires --analyze)', false)    
     .action(async (options: StackOptions) => {
       const logger = getLogger();
       try {
         await processStackOperation(options);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        logger.error(`❌ Stack analysis failed: ${errorMessage}`);
+        logger.error(`Stack analysis failed: ${errorMessage}`);
+        console.log(`Stack analysis failed: ${errorMessage}`);
         process.exit(1);
       }
     });
@@ -92,34 +75,35 @@ async function processStackOperation(options: StackOptions): Promise<void> {
   const config = await loadConfig();
   const logger = getLogger();
 
-  logger.info('🔍 Starting technology stack analysis');
+  logger.info('Starting technology stack analysis');
 
   const mcpClient = McpClient.fromConfig();
-  let stackData;
+  let stackData: Record<string, unknown>;
 
   try {
-    stackData = await mcpClient.detectStack();
+    const stackInfo = await mcpClient.detectStack();
+    stackData = stackInfo as unknown as Record<string, unknown>;
     if (!stackData) {
-      logger.warn('⚠️ MCP stack-detector not available or returned no data');
+      logger.warn('MCP stack-detector not available or returned no data');
       stackData = createFallbackStackData();
     }
   } catch (error) {
-    logger.warn('⚠️ MCP stack-detector failed, using fallback detection');
+    logger.warn('MCP stack-detector failed, using fallback detection');
     stackData = createFallbackStackData();
   }
 
   displayStackInfo(stackData);
 
-  let analysisResult;
+  let analysisResult: StackResponse | undefined;
   if (options.analyze) {
-    logger.info('🤖 Performing AI-powered stack analysis...');
+    logger.info('Performing AI-powered stack analysis');
     analysisResult = await analyzeStack(config, stackData, options);
     
     if (analysisResult?.summary) {
-      console.log(`\n📊 Analysis completed with ${(analysisResult.confidence * 100).toFixed(1)}% confidence`);
-      console.log(`🎯 Project maturity: ${analysisResult.summary.maturity_level}`);
+      console.log(`\nAnalysis completed with ${(analysisResult.confidence * 100).toFixed(1)}% confidence`);
+      console.log(`Project maturity: ${analysisResult.summary.maturity_level}`);
       if (analysisResult.summary.complexity_score !== undefined) {
-        console.log(`⚡ Complexity score: ${analysisResult.summary.complexity_score}/10`);
+        console.log(`Complexity score: ${analysisResult.summary.complexity_score}/10`);
       }
     }
   }
@@ -127,15 +111,15 @@ async function processStackOperation(options: StackOptions): Promise<void> {
   await generateReports(stackData, analysisResult, config, logger);
 
   if (options.analyze) {
-    logger.info('✅ Technology stack analysis completed with AI insights');
+    logger.info('Technology stack analysis completed with AI insights');
   } else {
-    logger.info('✅ Basic stack detection completed');
-    console.log('\n💡 Use --analyze for detailed AI-powered analysis');
-    console.log('🔍 Use --analyze --deep for comprehensive analysis');
+    logger.info('Basic stack detection completed');
+    console.log('\nUse --analyze for detailed AI-powered analysis');
+    console.log('Use --analyze --deep for comprehensive analysis');
   }
 }
 
-function createFallbackStackData(): any {
+function createFallbackStackData(): Record<string, unknown> {
   return { 
     primary: { name: 'Mixed Project', confidence: 50 },
     languages: [],
@@ -144,10 +128,10 @@ function createFallbackStackData(): any {
   };
 }
 
-async function analyzeStack(config: Config, stackData: any, options: StackOptions): Promise<StackResponse> {
+async function analyzeStack(config: Config, stackData: Record<string, unknown>, options: StackOptions): Promise<StackResponse> {
   const promptContext: PromptContext = {
     projectName: config.project?.name || 'Unknown Project',
-    timestamp: new Date().toISOString(),
+    timestamp: generateTimestamp(),
     userLanguage: config.translateReports 
       ? config.language || 'en-us' 
       : 'en-us',
@@ -158,50 +142,54 @@ async function analyzeStack(config: Config, stackData: any, options: StackOption
   const tier = options.deep ? 'premium' : 'default';
 
   const response = await execPrompt<PromptContext, StackResponse>(
-    'stack/system',
+    'stack',
     promptContext,
     '1.0.0',
     tier,
-    7,
-    3
+    0.3
   );
 
   return response;
 }
 
-function displayStackInfo(stackData: any): void {
-  if (stackData.primary) {
-    console.log(`\n🎯 Primary Stack: ${stackData.primary.name} (${stackData.primary.confidence?.toFixed(1) || 'N/A'}% confidence)`);
+function displayStackInfo(stackData: Record<string, unknown>): void {
+  const primary = stackData.primary as Record<string, unknown>;
+  if (primary) {
+    const confidence = primary.confidence as number;
+    console.log(`\nPrimary Stack: ${primary.name} (${confidence?.toFixed(1) || 'N/A'}% confidence)`);
   }
 
-  if (stackData.languages?.length > 0) {
-    console.log('\n💻 Languages:');
-    stackData.languages.forEach((lang: any) => {
-      const confidence = lang.confidence?.toFixed(1) || 'N/A';
-      console.log(`   📄 ${lang.name} ${lang.version ? `(${lang.version})` : ''} - ${confidence}%`);
+  const languages = stackData.languages as Array<Record<string, unknown>>;
+  if (languages?.length > 0) {
+    console.log('\nLanguages:');
+    languages.forEach((lang: Record<string, unknown>) => {
+      const confidence = (lang.confidence as number)?.toFixed(1) || 'N/A';
+      console.log(`   ${lang.name} ${lang.version ? `(${lang.version})` : ''} - ${confidence}%`);
     });
   }
 
-  if (stackData.frameworks?.length > 0) {
-    console.log('\n⚛️ Frameworks & Libraries:');
-    stackData.frameworks.forEach((fw: any) => {
-      const confidence = fw.confidence?.toFixed(1) || 'N/A';
+  const frameworks = stackData.frameworks as Array<Record<string, unknown>>;
+  if (frameworks?.length > 0) {
+    console.log('\nFrameworks & Libraries:');
+    frameworks.forEach((fw: Record<string, unknown>) => {
+      const confidence = (fw.confidence as number)?.toFixed(1) || 'N/A';
       const version = fw.version ? `v${fw.version}` : 'unknown version';
-      console.log(`   📦 ${fw.name} (${version}) - ${confidence}%`);
+      console.log(`   ${fw.name} (${version}) - ${confidence}%`);
     });
   }
 
-  if (stackData.tools?.length > 0) {
-    console.log('\n🔧 Development Tools:');
-    stackData.tools.forEach((tool: any) => {
-      const confidence = tool.confidence?.toFixed(1) || 'N/A';
-      console.log(`   ⚙️ ${tool.name} - ${confidence}%`);
+  const tools = stackData.tools as Array<Record<string, unknown>>;
+  if (tools?.length > 0) {
+    console.log('\nDevelopment Tools:');
+    tools.forEach((tool: Record<string, unknown>) => {
+      const confidence = (tool.confidence as number)?.toFixed(1) || 'N/A';
+      console.log(`   ${tool.name} - ${confidence}%`);
     });
   }
 }
 
 async function generateReports(
-  stackData: any, 
+  stackData: Record<string, unknown>, 
   analysisResult: StackResponse | undefined, 
   config: Config, 
   logger: ReturnType<typeof getLogger>
@@ -222,7 +210,7 @@ async function generateReports(
     timestamp,
     raw_stack_data: stackData,
     analysis_result: analysisResult,
-    generated_by: 'CLIA v4.0.0',
+    generated_by: 'CLIA v1.0.0',
     command: 'stack'
   };
 
@@ -233,38 +221,43 @@ async function generateReports(
   const markdownPath = path.join(reportsDir, `${timestamp}_stack.md`);
   fs.writeFileSync(markdownPath, markdownReport);
 
-  logger.info(`📄 Reports saved: ${jsonPath} and ${markdownPath}`);
+  logger.info(`Reports saved: ${jsonPath} and ${markdownPath}`);
 }
 
 function generateMarkdownReport(
-  stackData: any, 
+  stackData: Record<string, unknown>, 
   analysisResult: StackResponse | undefined, 
   timestamp: string
 ): string {
+  const primary = stackData?.primary as Record<string, unknown>;
+  const languages = stackData?.languages as Array<Record<string, unknown>>;
+  const frameworks = stackData?.frameworks as Array<Record<string, unknown>>;
+  const tools = stackData?.tools as Array<Record<string, unknown>>;
+  
   const report = `# Technology Stack Analysis Report
 
 **Generated**: ${new Date().toISOString()}
 **Timestamp**: ${timestamp}
-**Tool**: CLIA v4.0.0
+**Tool**: CLIA v1.0.0
 
 ## Stack Detection Results
 
 ### Primary Technology
-${stackData?.primary ? `**${stackData.primary.name}** (${stackData.primary.confidence?.toFixed(1) || 'N/A'}% confidence)` : 'Not detected'}
+${primary ? `**${primary.name}** (${(primary.confidence as number)?.toFixed(1) || 'N/A'}% confidence)` : 'Not detected'}
 
 ### Languages Detected
-${stackData?.languages?.map((lang: any) => 
-  `- **${lang.name}** ${lang.version ? `(${lang.version})` : ''} - ${lang.confidence?.toFixed(1) || 'N/A'}% confidence`
+${languages?.map((lang: Record<string, unknown>) => 
+  `- **${lang.name}** ${lang.version ? `(${lang.version})` : ''} - ${(lang.confidence as number)?.toFixed(1) || 'N/A'}% confidence`
 ).join('\n') || 'No languages detected'}
 
 ### Frameworks & Libraries
-${stackData?.frameworks?.map((fw: any) => 
-  `- **${fw.name}** ${fw.version ? `v${fw.version}` : ''} - ${fw.confidence?.toFixed(1) || 'N/A'}% confidence`
+${frameworks?.map((fw: Record<string, unknown>) => 
+  `- **${fw.name}** ${fw.version ? `v${fw.version}` : ''} - ${(fw.confidence as number)?.toFixed(1) || 'N/A'}% confidence`
 ).join('\n') || 'No frameworks detected'}
 
 ### Development Tools
-${stackData?.tools?.map((tool: any) => 
-  `- **${tool.name}** - ${tool.confidence?.toFixed(1) || 'N/A'}% confidence`
+${tools?.map((tool: Record<string, unknown>) => 
+  `- **${tool.name}** - ${(tool.confidence as number)?.toFixed(1) || 'N/A'}% confidence`
 ).join('\n') || 'No tools detected'}
 
 ${analysisResult ? `## AI Analysis Results
@@ -277,12 +270,12 @@ ${analysisResult ? `## AI Analysis Results
 - **Analysis Confidence**: ${(analysisResult.confidence * 100 || 50).toFixed(1)}%
 
 ${analysisResult.recommendations?.modernization?.length > 0 ? `### Modernization Recommendations
-${analysisResult.recommendations.modernization.map((rec: any) => 
+${analysisResult.recommendations.modernization.map((rec) => 
   `- **${rec.category}**: ${rec.current} → ${rec.recommended} (Priority: ${rec.priority})\n  *${rec.reason}*`
 ).join('\n\n')}` : ''}
 
 ${analysisResult.recommendations?.security?.length > 0 ? `### Security Recommendations
-${analysisResult.recommendations.security.map((sec: any) => 
+${analysisResult.recommendations.security.map((sec) => 
   `- **${sec.severity.toUpperCase()}**: ${sec.issue}\n  *Solution*: ${sec.solution}`
 ).join('\n\n')}` : ''}` : ''}
 
