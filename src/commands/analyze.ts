@@ -14,8 +14,25 @@ import {
   detectExternalIntegrations,
   analyzeProjectIntegrations,
 } from '../shared/external-integrations-detector.js';
+import { McpClient } from '../mcp/client.js';
+import { getSourceAnalysis } from '../shared/knowledge-base.js';
+import { processAskQuery } from './ask.js';
+import {
+  getOutputLanguage,
+  shouldTranslateReports,
+} from '../shared/translation.js';
+import { z } from 'zod';
 
-// Interface for project inspection data
+interface AnalyzeOptions {
+  paths?: string[];
+  output?: string;
+  includeTests?: boolean;
+  format?: 'json' | 'markdown' | 'both';
+  outputLanguage: string;
+  dependencyGraph?: 'mermaid' | 'plantuml' | 'structurizr' | boolean;
+  deadCode?: boolean;
+}
+
 interface ProjectInspection {
   summary: {
     primaryLanguage: string;
@@ -74,16 +91,20 @@ export function registerAnalyzeCommand(program: Command): void {
   program
     .command('analyze [paths...]')
     .alias('analyse')
-    .description(
-      '🔍 Comprehensive code quality and security analysis with dynamic batch processing'
-    )
+    .description('Analyzes code quality, security, dependencies and dead code')
     .option('-o, --output <path>', 'Output directory for reports')
     .option('--include-tests', 'Include test files in analysis')
     .option('--format <format>', 'Output format: json, markdown, both', 'both')
     .option(
-      '--outputLanguage <OUTPUT_LANGUAGE>',
-      'Translate to pt-Br or other language'
+      '--dependency-graph [type]',
+      'Generate dependency diagram (mermaid|plantuml|structurizr)',
+      'mermaid'
     )
+    .option(
+      '--dead-code',
+      'Detect unused code and exports (uses LLM for enhanced accuracy)'
+    )
+    .option('--output-language <lang>', 'Output language for reports')
     .action(async (paths: string[], options: AnalyzeOptions) => {
       try {
         await runAnalyze({
@@ -92,52 +113,85 @@ export function registerAnalyzeCommand(program: Command): void {
         });
         process.exit(0);
       } catch (error) {
-        console.error('❌ Analyze command failed:', error);
+        getLogger().error('Analysis command failed:', error);
         process.exit(1);
       }
     });
 }
 
-async function updateCacheWithAnalysisResults(
-  batchResults: any[],
+async function updateCacheWithFileAnalysis(
+  filePath: string,
+  llmAnalysis: any,
   config: any
 ): Promise<void> {
-  const logger = getLogger();
-  const cache = await loadCache();
-  let cacheUpdated = false;
-
-  for (const batchResult of batchResults) {
-    if (
-      batchResult.analysis &&
-      batchResult.analysis.file_analyses &&
-      Array.isArray(batchResult.analysis.file_analyses)
-    ) {
-      for (const analysis of batchResult.analysis.file_analyses) {
-        const filePath = analysis.file;
-        const cached = cache[filePath];
-
-        if (cached) {
-          cached.fullAnalysis = analysis;
-          cached.timestamp = new Date().toISOString();
-          cacheUpdated = true;
-        }
-      }
-    }
+  // Only update cache if we have a valid LLM analysis result
+  if (!llmAnalysis || !llmAnalysis.file) {
+    return;
   }
 
-  if (cacheUpdated) {
+  const cache = await loadCache();
+  
+  // We need to create the complete cache entry since we removed it from discoverAndPrepareFiles
+  // Get file info for basic analysis data
+  try {
+    const content = await fs.promises.readFile(filePath, 'utf-8');
+    const language = detectLanguage(filePath);
+    const stats = await fs.promises.stat(filePath);
+    const contentHash = generateContentHash(content);
+    
+    const complexityEstimate = estimateComplexity(content, language);
+    const complexityTier = determineComplexityTier(complexityEstimate, stats.size);
+    const dependencies = extractDependencies(content, language, filePath);
+    
+    // Optimized cache structure - store only essential metadata, not full content
+    const fileAnalysis: FileAnalysisData = {
+      file: filePath,
+      language,
+      content: '', // Don't store content in cache - we have contentHash for validation
+      size: stats.size,
+      complexity_estimate: complexityEstimate,
+      complexity_tier: complexityTier,
+      dependencies,
+      exported_symbols: dependencies.exported_functions.concat(
+        dependencies.exported_classes,
+        dependencies.exported_variables
+      ),
+      imported_symbols: dependencies.imported_functions.concat(
+        dependencies.imported_classes,
+        dependencies.imported_variables
+      ),
+    };
+
+    // Remove dependencies from fullAnalysis to avoid duplication
+    const optimizedLLMAnalysis = { ...llmAnalysis };
+    if (optimizedLLMAnalysis.dependencies) {
+      delete optimizedLLMAnalysis.dependencies;
+    }
+
+    // Create or update cache entry with optimized structure
+    cache[filePath] = {
+      contentHash,
+      timestamp: new Date().toISOString(),
+      analysis: fileAnalysis,
+      fullAnalysis: optimizedLLMAnalysis
+    };
+    
     await saveCache(cache);
-    logger.info('🚀 Cache updated with analysis results');
+  } catch (error) {
+    console.warn(`Failed to update cache for ${filePath}:`, error);
   }
 }
 
-function createAnalysisResult(
+async function createAnalysisResult(
   allAnalyses: any[],
-  totalFiles: number
-): AnalysisResult {
+  totalFiles: number,
+  options: AnalyzeOptions,
+  filesToProcess: FileAnalysisData[],
+  cachedAnalyses: { analysis: FileAnalysisData; fullAnalysis: any }[]
+): Promise<AnalysisResult> {
   const timestamp = new Date().toISOString();
 
-  return {
+  const result: AnalysisResult = {
     metadata: {
       projectName: getProjectName(),
       timestamp,
@@ -162,15 +216,82 @@ function createAnalysisResult(
       long_term_strategic: extractLongTermStrategic(allAnalyses),
     },
   };
+
+  // Add dead code analysis if requested
+  if (options.deadCode) {
+    getLogger().info('Starting dead code analysis with LLM...');
+    try {
+      result.dead_code = await analyzeDeadCodeWithLLM();
+      getLogger().info('Dead code analysis completed successfully');
+    } catch (error) {
+      getLogger().warn('Failed to analyze dead code with LLM:', error);
+      // Fallback to regex-based analysis
+      try {
+        getLogger().info('Falling back to regex-based dead code analysis...');
+        result.dead_code = await analyzeDeadCodeFromCache();
+        getLogger().info('Fallback dead code analysis completed');
+      } catch (fallbackError) {
+        getLogger().error('Both LLM and fallback dead code analysis failed:', fallbackError);
+      }
+    }
+  }
+
+  // Add dependency graph if requested
+  if (options.dependencyGraph) {
+    try {
+      // Combine all file data for dependency graph
+      const allFileData = [
+        ...filesToProcess,
+        ...cachedAnalyses.map(c => c.analysis)
+      ];
+      
+
+      
+      let dependencyNodes: DependencyNode[];
+
+      if (options.deadCode && result.dead_code) {
+        // Use enhanced dependency graph with LLM analysis data
+        dependencyNodes = await buildEnhancedDependencyGraph(
+          allFileData,
+          result.dead_code
+        );
+      } else {
+        dependencyNodes = await buildDependencyGraph(allFileData);
+      }
+
+      const format =
+        typeof options.dependencyGraph === 'string'
+          ? options.dependencyGraph
+          : 'mermaid';
+      const diagram = generateDependencyDiagram(dependencyNodes, format);
+
+      result.dependency_graph = {
+        format,
+        diagram,
+        nodes: dependencyNodes,
+      };
+    } catch (error) {
+      getLogger().warn('Failed to generate dependency graph:', error);
+    }
+  }
+
+  return result;
 }
 
 function extractCriticalIssues(analyses: any[]): string[] {
   const issues: string[] = [];
   for (const analysis of analyses) {
-    if (analysis.security_analysis?.vulnerabilities) {
-      for (const vuln of analysis.security_analysis.vulnerabilities) {
-        if (vuln.severity === 'high' || vuln.severity === 'critical') {
-          issues.push(`${analysis.file}: ${vuln.description}`);
+    if (analysis.analysis?.security?.issues) {
+      for (const issue of analysis.analysis.security.issues) {
+        if (issue.severity === 'high' || issue.severity === 'critical') {
+          issues.push(`${analysis.file}: ${issue.description}`);
+        }
+      }
+    }
+    if (analysis.priority_actions) {
+      for (const action of analysis.priority_actions) {
+        if (action.priority === 'critical' || action.priority === 'high') {
+          issues.push(`${analysis.file}: ${action.action}`);
         }
       }
     }
@@ -181,10 +302,12 @@ function extractCriticalIssues(analyses: any[]): string[] {
 function extractHighPriorityIssues(analyses: any[]): string[] {
   const issues: string[] = [];
   for (const analysis of analyses) {
-    if (analysis.overall_assessment?.priority === 'high') {
-      issues.push(
-        `${analysis.file}: ${analysis.overall_assessment.impact_assessment}`
-      );
+    if (analysis.priority_actions) {
+      for (const action of analysis.priority_actions) {
+        if (action.priority === 'high') {
+          issues.push(`${analysis.file}: ${action.action}`);
+        }
+      }
     }
   }
   return issues;
@@ -193,12 +316,12 @@ function extractHighPriorityIssues(analyses: any[]): string[] {
 function extractImprovementOpportunities(analyses: any[]): string[] {
   const opportunities: string[] = [];
   for (const analysis of analyses) {
-    if (analysis.recommendations?.architectural_improvements) {
-      opportunities.push(
-        ...analysis.recommendations.architectural_improvements.map(
-          (imp: string) => `${analysis.file}: ${imp}`
-        )
-      );
+    if (analysis.priority_actions) {
+      for (const action of analysis.priority_actions) {
+        if (action.priority === 'medium' || action.priority === 'low') {
+          opportunities.push(`${analysis.file}: ${action.action}`);
+        }
+      }
     }
   }
   return opportunities;
@@ -207,7 +330,7 @@ function extractImprovementOpportunities(analyses: any[]): string[] {
 function calculateOverallScore(analyses: any[]): number {
   if (analyses.length === 0) return 0;
   const sum = analyses.reduce(
-    (acc, analysis) => acc + (analysis.overall_assessment?.overall_score || 0),
+    (acc, analysis) => acc + (analysis.overall_score || 0),
     0
   );
   return Math.round(sum / analyses.length);
@@ -216,11 +339,17 @@ function calculateOverallScore(analyses: any[]): number {
 function countTotalIssues(analyses: any[]): number {
   let count = 0;
   for (const analysis of analyses) {
-    if (analysis.security_analysis?.vulnerabilities) {
-      count += analysis.security_analysis.vulnerabilities.length;
+    if (analysis.analysis?.security?.issues) {
+      count += analysis.analysis.security.issues.length;
     }
-    if (analysis.clean_code_analysis?.complexity_concerns) {
-      count += analysis.clean_code_analysis.complexity_concerns.length;
+    if (analysis.analysis?.clean_code?.issues) {
+      count += analysis.analysis.clean_code.issues.length;
+    }
+    if (analysis.analysis?.solid_principles?.violations) {
+      count += analysis.analysis.solid_principles.violations.length;
+    }
+    if (analysis.analysis?.performance?.bottlenecks) {
+      count += analysis.analysis.performance.bottlenecks.length;
     }
   }
   return count;
@@ -229,9 +358,11 @@ function countTotalIssues(analyses: any[]): number {
 function countFilesWithIssues(analyses: any[]): number {
   return analyses.filter((analysis) => {
     return (
-      (analysis.security_analysis?.vulnerabilities?.length || 0) > 0 ||
-      (analysis.clean_code_analysis?.complexity_concerns?.length || 0) > 0 ||
-      analysis.overall_assessment?.risk_level !== 'low'
+      (analysis.analysis?.security?.issues?.length || 0) > 0 ||
+      (analysis.analysis?.clean_code?.issues?.length || 0) > 0 ||
+      (analysis.analysis?.solid_principles?.violations?.length || 0) > 0 ||
+      (analysis.analysis?.performance?.bottlenecks?.length || 0) > 0 ||
+      (analysis.overall_score || 0) < 7
     );
   }).length;
 }
@@ -239,12 +370,12 @@ function countFilesWithIssues(analyses: any[]): number {
 function extractImmediateActions(analyses: any[]): string[] {
   const actions: string[] = [];
   for (const analysis of analyses) {
-    if (analysis.recommendations?.security_improvements) {
-      actions.push(
-        ...analysis.recommendations.security_improvements.map(
-          (imp: string) => `${analysis.file}: ${imp}`
-        )
-      );
+    if (analysis.priority_actions) {
+      for (const action of analysis.priority_actions) {
+        if (action.priority === 'critical') {
+          actions.push(`${analysis.file}: ${action.action}`);
+        }
+      }
     }
   }
   return actions;
@@ -253,12 +384,12 @@ function extractImmediateActions(analyses: any[]): string[] {
 function extractShortTermImprovements(analyses: any[]): string[] {
   const improvements: string[] = [];
   for (const analysis of analyses) {
-    if (analysis.recommendations?.code_quality_improvements) {
-      improvements.push(
-        ...analysis.recommendations.code_quality_improvements.map(
-          (imp: string) => `${analysis.file}: ${imp}`
-        )
-      );
+    if (analysis.priority_actions) {
+      for (const action of analysis.priority_actions) {
+        if (action.priority === 'high') {
+          improvements.push(`${analysis.file}: ${action.action}`);
+        }
+      }
     }
   }
   return improvements;
@@ -267,31 +398,15 @@ function extractShortTermImprovements(analyses: any[]): string[] {
 function extractLongTermStrategic(analyses: any[]): string[] {
   const strategic: string[] = [];
   for (const analysis of analyses) {
-    if (analysis.recommendations?.architectural_improvements) {
-      strategic.push(
-        ...analysis.recommendations.architectural_improvements.map(
-          (imp: string) => `${analysis.file}: ${imp}`
-        )
-      );
+    if (analysis.priority_actions) {
+      for (const action of analysis.priority_actions) {
+        if (action.priority === 'medium' || action.priority === 'low') {
+          strategic.push(`${analysis.file}: ${action.action}`);
+        }
+      }
     }
   }
   return strategic;
-}
-import { McpClient } from '../mcp/client.js';
-import { getSourceAnalysis } from '../shared/knowledge-base.js';
-import { processAskQuery } from './ask.js';
-import {
-  getOutputLanguage,
-  shouldTranslateReports,
-} from '../shared/translation.js';
-
-interface AnalyzeOptions {
-  paths?: string[];
-  output?: string;
-  includeTests?: boolean;
-  format?: 'json' | 'markdown' | 'both';
-  detailed?: boolean;
-  outputLanguage: string;
 }
 
 interface FileAnalysisData {
@@ -302,27 +417,67 @@ interface FileAnalysisData {
   complexity_estimate: number;
   complexity_tier: 'low' | 'medium' | 'high';
   ragContext?: string;
+  dependencies?: DependencyInfo;
+  exported_symbols?: string[];
+  imported_symbols?: string[];
 }
 
-interface FileBatch {
-  files: FileAnalysisData[];
-  tier: 'low' | 'medium' | 'high';
-  batchSize: number;
-  totalTokenEstimate: number;
+interface DependencyInfo {
+  internal_imports: string[];
+  external_imports: string[];
+  exported_functions: string[];
+  exported_classes: string[];
+  exported_variables: string[];
+  imported_functions: string[];
+  imported_classes: string[];
+  imported_variables: string[];
+  private_functions: string[];
+  private_classes: string[];
+  private_variables: string[];
 }
 
-interface BatchAnalysisResult {
-  batchId: number;
-  tier: 'low' | 'medium' | 'high';
-  files: string[];
-  analysis: any;
+interface DependencyNode {
+  file: string;
+  dependencies: string[];
+  dependents: string[];
+  exports: string[];
+  imports: string[];
+  dead_exports: string[];
+}
+
+interface DeadCodeAnalysis {
+  unused_functions: string[];
+  unused_classes: string[];
+  unused_variables: string[];
+  unused_files: string[];
+  orphaned_exports: string[];
+  circular_dependencies: string[];
+}
+
+interface DeadCodeAnalysis {
+  unused_functions: string[];
+  unused_classes: string[];
+  unused_variables: string[];
+  unused_files: string[];
+  orphaned_exports: string[];
+  circular_dependencies: string[];
+}
+
+interface DeadCodeResult {
+  analysis: DeadCodeAnalysis;
+  summary: {
+    total_unused_functions: number;
+    total_unused_classes: number;
+    total_unused_files: number;
+    total_orphaned_exports: number;
+    circular_dependency_count: number;
+  };
 }
 
 interface CacheEntry {
   contentHash: string;
   timestamp: string;
   analysis: FileAnalysisData;
-  // Cache completo da análise LLM (quando disponível)
   fullAnalysis?: {
     file: string;
     language: string;
@@ -354,7 +509,7 @@ async function loadProjectInspection(): Promise<ProjectInspection | null> {
     const content = await fs.promises.readFile(inspectionPath, 'utf-8');
     return JSON.parse(content) as ProjectInspection;
   } catch (error) {
-    getLogger().warn('⚠️ Failed to load project inspection data:', error);
+    getLogger().warn('Failed to load project inspection data:', error);
     return null;
   }
 }
@@ -413,6 +568,381 @@ interface AnalysisResult {
   consolidated_findings: any;
   metrics: any;
   recommendations: any;
+  dead_code?: DeadCodeResult;
+  dependency_graph?: {
+    format: string;
+    diagram: string;
+    nodes: DependencyNode[];
+  };
+}
+
+// Zod schemas for type validation
+const FileAnalysisPromptContextSchema = z.object({
+  projectName: z.string(),
+  fileName: z.string(),
+  language: z.string(),
+  fileContent: z.string(),
+  fileSize: z.string(),
+  complexityEstimate: z.string(),
+  complexityTier: z.enum(['low', 'medium', 'high']),
+  stackContext: z.string(),
+  ragContext: z.string(),
+  securityContext: z.string(),
+  integrationContext: z.string(),
+  dependencyInfo: z.string(),
+  userLanguage: z.string(),
+  enableDeadCodeAnalysis: z.boolean(),
+});
+
+const FileAnalysisResponseSchema = z
+  .object({
+    file: z.string(),
+    language: z.string(),
+    purpose: z.string().optional(),
+    overall_score: z.number().optional(),
+    analysis: z
+      .object({
+        security: z
+          .object({
+            score: z.number().optional(),
+            vulnerabilities: z
+              .array(
+                z.union([
+                  z.string(),
+                  z.object({
+                    severity: z.string().optional(),
+                    description: z.string().optional(),
+                    message: z.string().optional(),
+                    location: z.string().optional(),
+                    recommendation: z.string().optional(),
+                    fix: z.string().optional(),
+                  }),
+                ])
+              )
+              .optional(),
+            security_concerns: z.array(z.string()).optional(),
+            exposed_secrets: z
+              .array(
+                z.union([
+                  z.string(),
+                  z.object({
+                    description: z.string().optional(),
+                    type: z.string().optional(),
+                  }),
+                ])
+              )
+              .optional(),
+          })
+          .optional(),
+        clean_code: z
+          .object({
+            score: z.number().optional(),
+            naming_issues: z
+              .array(
+                z.union([
+                  z.string(),
+                  z.object({
+                    description: z.string().optional(),
+                    message: z.string().optional(),
+                    suggestion: z.string().optional(),
+                    location: z.string().optional(),
+                  }),
+                ])
+              )
+              .optional(),
+            complexity_concerns: z
+              .array(
+                z.union([
+                  z.string(),
+                  z.object({
+                    description: z.string().optional(),
+                    message: z.string().optional(),
+                    suggestion: z.string().optional(),
+                    complexity_score: z.number().optional(),
+                  }),
+                ])
+              )
+              .optional(),
+            organization_issues: z
+              .array(
+                z.union([
+                  z.string(),
+                  z.object({
+                    description: z.string().optional(),
+                    message: z.string().optional(),
+                    suggestion: z.string().optional(),
+                  }),
+                ])
+              )
+              .optional(),
+          })
+          .optional(),
+        solid_principles: z
+          .object({
+            violations: z
+              .array(
+                z.union([
+                  z.string(),
+                  z.object({
+                    principle: z.string().optional(),
+                    description: z.string().optional(),
+                    message: z.string().optional(),
+                    impact: z.string().optional(),
+                    suggestion: z.string().optional(),
+                  }),
+                ])
+              )
+              .optional(),
+            architectural_concerns: z.array(z.string()).optional(),
+            dependency_issues: z.array(z.string()).optional(),
+          })
+          .optional(),
+        maintainability: z
+          .object({
+            score: z.number().optional(),
+          })
+          .optional(),
+        performance: z
+          .object({
+            score: z.number().optional(),
+            performance_issues: z
+              .array(
+                z.union([
+                  z.string(),
+                  z.object({
+                    description: z.string().optional(),
+                    message: z.string().optional(),
+                    severity: z.string().optional(),
+                    impact: z.string().optional(),
+                  }),
+                ])
+              )
+              .optional(),
+            optimization_opportunities: z
+              .array(
+                z.union([
+                  z.string(),
+                  z.object({
+                    description: z.string().optional(),
+                    message: z.string().optional(),
+                    expected_impact: z.string().optional(),
+                  }),
+                ])
+              )
+              .optional(),
+            memory_concerns: z
+              .array(
+                z.union([
+                  z.string(),
+                  z.object({
+                    description: z.string().optional(),
+                    message: z.string().optional(),
+                    impact: z.string().optional(),
+                  }),
+                ])
+              )
+              .optional(),
+          })
+          .optional(),
+        dead_code_analysis: z
+          .object({
+            unused_private_functions: z
+              .array(
+                z.union([
+                  z.string(),
+                  z.object({
+                    name: z.string(),
+                    line: z.number().optional(),
+                    reason: z.string().optional(),
+                  }),
+                ])
+              )
+              .optional(),
+            unused_private_classes: z
+              .array(
+                z.union([
+                  z.string(),
+                  z.object({
+                    name: z.string(),
+                    line: z.number().optional(),
+                    reason: z.string().optional(),
+                  }),
+                ])
+              )
+              .optional(),
+            unused_private_variables: z
+              .array(
+                z.union([
+                  z.string(),
+                  z.object({
+                    name: z.string(),
+                    line: z.number().optional(),
+                    reason: z.string().optional(),
+                  }),
+                ])
+              )
+              .optional(),
+            unreachable_code: z
+              .array(
+                z.union([
+                  z.string(),
+                  z.object({
+                    location: z.string(),
+                    reason: z.string().optional(),
+                  }),
+                ])
+              )
+              .optional(),
+          })
+          .optional(),
+      })
+      .optional(),
+    recommendations: z
+      .object({
+        security_improvements: z
+          .array(
+            z.union([
+              z.string(),
+              z.object({
+                description: z.string().optional(),
+                message: z.string().optional(),
+              }),
+            ])
+          )
+          .optional(),
+        code_quality_improvements: z
+          .array(
+            z.union([
+              z.string(),
+              z.object({
+                description: z.string().optional(),
+                message: z.string().optional(),
+              }),
+            ])
+          )
+          .optional(),
+        architectural_improvements: z
+          .array(
+            z.union([
+              z.string(),
+              z.object({
+                description: z.string().optional(),
+                message: z.string().optional(),
+              }),
+            ])
+          )
+          .optional(),
+        performance_improvements: z
+          .array(
+            z.union([
+              z.string(),
+              z.object({
+                description: z.string().optional(),
+                message: z.string().optional(),
+              }),
+            ])
+          )
+          .optional(),
+        maintenance_improvements: z
+          .array(
+            z.union([
+              z.string(),
+              z.object({
+                description: z.string().optional(),
+                message: z.string().optional(),
+              }),
+            ])
+          )
+          .optional(),
+      })
+      .optional(),
+    priority_actions: z
+      .array(
+        z.object({
+          priority: z.enum(['critical', 'high', 'medium', 'low']),
+          action: z.string(),
+        })
+      )
+      .optional(),
+  })
+  .passthrough();
+
+const DeadCodePromptContextSchema = z.object({
+  projectName: z.string(),
+  projectData: z.string(),
+  stackContext: z.string(),
+  userLanguage: z.string(),
+  timestamp: z.string(),
+});
+
+const DeadCodeResponseSchema = z
+  .object({
+    deadCode: z
+      .object({
+        unusedFiles: z
+          .array(
+            z.object({
+              path: z.string(),
+              reason: z.string().optional(),
+            })
+          )
+          .optional(),
+        unusedExports: z
+          .array(
+            z.object({
+              file: z.string(),
+              export: z.string(),
+              type: z.enum(['function', 'class', 'variable']),
+              reason: z.string().optional(),
+            })
+          )
+          .optional(),
+      })
+      .optional(),
+    dependencies: z
+      .object({
+        circularDependencies: z
+          .array(
+            z.object({
+              cycle: z.array(z.string()),
+              impact: z.string().optional(),
+            })
+          )
+          .optional(),
+      })
+      .optional(),
+  })
+  .passthrough();
+
+type FileAnalysisPromptContext = z.infer<
+  typeof FileAnalysisPromptContextSchema
+>;
+type FileAnalysisResponse = z.infer<typeof FileAnalysisResponseSchema>;
+type DeadCodePromptContext = z.infer<typeof DeadCodePromptContextSchema>;
+type DeadCodeResponse = z.infer<typeof DeadCodeResponseSchema>;
+
+function assertFileAnalysisResponse(obj: unknown): FileAnalysisResponse {
+  const res = FileAnalysisResponseSchema.safeParse(obj);
+  if (!res.success) {
+    getLogger().warn(
+      `File analysis response validation failed: ${res.error.message}`
+    );
+    // Return the object as-is with passthrough, but log the validation error
+    return obj as FileAnalysisResponse;
+  }
+  return res.data;
+}
+
+function assertDeadCodeResponse(obj: unknown): DeadCodeResponse {
+  const res = DeadCodeResponseSchema.safeParse(obj);
+  if (!res.success) {
+    getLogger().warn(
+      `Dead code analysis response validation failed: ${res.error.message}`
+    );
+    // Return the object as-is with passthrough, but log the validation error
+    return obj as DeadCodeResponse;
+  }
+  return res.data;
 }
 
 // Cache functions
@@ -461,7 +991,7 @@ async function runAnalyze(options: AnalyzeOptions): Promise<void> {
   const logger = getLogger();
   const config = loadConfig();
 
-  logger.info('🔍 Starting code analysis');
+  logger.info('Starting comprehensive code analysis');
 
   try {
     const targetPaths = options.paths || [process.cwd()];
@@ -473,49 +1003,61 @@ async function runAnalyze(options: AnalyzeOptions): Promise<void> {
 
     const totalFiles = filesToProcess.length + cachedAnalyses.length;
     if (totalFiles === 0) {
-      logger.warn('⚠️ No files found for analysis');
+      logger.warn('No files found for analysis');
       return;
     }
 
-    if (filesToProcess.length > 0) {
-      logger.info(
-        `📝 Analyzing ${filesToProcess.length} files (${cachedAnalyses.length} from cache)`
-      );
-    }
+    logger.info(
+      `Analyzing ${filesToProcess.length} files (${cachedAnalyses.length} from cache)`
+    );
 
-    let batchResults: any[] = [];
+    const fileResults: FileAnalysisResponse[] = [];
 
     if (filesToProcess.length > 0) {
-      const batches = createComplexityBatches(filesToProcess);
-      const contexts = await collectContexts(
-        [...filesToProcess, ...cachedAnalyses.map((c) => c.analysis)],
-        config
-      );
+      for (let i = 0; i < filesToProcess.length; i++) {
+        const file = filesToProcess[i];
+        logger.info(
+          `Processing file ${i + 1}/${filesToProcess.length}: ${file.file}`
+        );
 
-      batchResults = await processBatchesInParallel(
-        batches,
-        contexts,
-        config,
-        options
-      );
+        try {
+          const analysis = await processFile(file, config, options);
+          fileResults.push(analysis);
 
-      await updateCacheWithAnalysisResults(batchResults, config);
+          // Update cache with complete analysis after LLM processing
+          await updateCacheWithFileAnalysis(file.file, analysis, config);
+        } catch (error) {
+          logger.error(`Failed to analyze file ${file.file}:`, error);
+        }
+      }
     }
 
     const allAnalyses = [
       ...cachedAnalyses.map((c) => c.fullAnalysis),
-      ...batchResults.flatMap((b) => b.analysis?.file_analyses || []),
+      ...fileResults,
     ];
 
-    const analysisResult = createAnalysisResult(allAnalyses, totalFiles);
+    const analysisResult = await createAnalysisResult(
+      allAnalyses,
+      totalFiles,
+      options,
+      filesToProcess,
+      cachedAnalyses
+    );
+
     await saveAnalysisResults(analysisResult, options, config);
     displaySummary(analysisResult);
+
+    console.log('Analysis completed successfully');
   } catch (error) {
-    logger.error('❌ Analysis failed:', error);
+    logger.error('Analysis failed:', error);
     throw error;
   }
 }
 
+/**
+ * Discover and prepare files for analysis with enhanced dependency extraction
+ */
 async function discoverAndPrepareFiles(
   targetPaths: string[],
   config: any,
@@ -526,7 +1068,6 @@ async function discoverAndPrepareFiles(
 }> {
   const logger = getLogger();
 
-  // Load project inspection to get exclude paths
   const projectInspection = await loadProjectInspection();
   const excludePaths = getExcludePaths(
     projectInspection,
@@ -535,10 +1076,9 @@ async function discoverAndPrepareFiles(
   );
 
   if (excludePaths.length > 0) {
-    logger.info(`🚫 Using exclude paths: ${excludePaths.join(', ')}`);
+    logger.info(`Using exclude paths: ${excludePaths.join(', ')}`);
   }
 
-  // Load existing cache
   const cache = await loadCache();
   let cacheUpdated = false;
 
@@ -562,7 +1102,7 @@ async function discoverAndPrepareFiles(
 
         if (stats.size > maxSizeBytes) {
           logger.info(
-            `⚠️ Skipping large file: ${stats.size} ${filePath} (${Math.round(stats.size / 1024)}KB)`
+            `Skipping large file: ${filePath} (${Math.round(stats.size / 1024)}KB)`
           );
           continue;
         }
@@ -572,8 +1112,15 @@ async function discoverAndPrepareFiles(
 
         const cached = cache[relativePath];
         if (cached && hasFullAnalysisCache(cached, contentHash)) {
+          // Restore content to cached analysis when needed (content is not stored in cache)
+          const restoredAnalysis = { 
+            ...cached.analysis, 
+            content: content, // Re-add content for processing
+            ragContext: await getSourceAnalysis(relativePath, processAskQuery)
+          };
+          
           cachedAnalyses.push({
-            analysis: cached.analysis,
+            analysis: restoredAnalysis,
             fullAnalysis: cached.fullAnalysis!,
           });
           continue;
@@ -585,7 +1132,12 @@ async function discoverAndPrepareFiles(
           stats.size
         );
 
-        // Get source analysis using Knowledge Base
+        const dependencies = extractDependencies(
+          content,
+          language,
+          relativePath
+        );
+
         const ragContext = await getSourceAnalysis(
           relativePath,
           processAskQuery
@@ -594,36 +1146,33 @@ async function discoverAndPrepareFiles(
         const fileAnalysis: FileAnalysisData = {
           file: relativePath,
           language,
-          content:
-            content.length <= 8000
-              ? content
-              : content.substring(0, 8000) + '...\n[Content truncated]', // Limit content size
+          content,
           size: stats.size,
           complexity_estimate: complexityEstimate,
           complexity_tier: complexityTier,
           ragContext,
+          dependencies,
+          exported_symbols: dependencies.exported_functions.concat(
+            dependencies.exported_classes,
+            dependencies.exported_variables
+          ),
+          imported_symbols: dependencies.imported_functions.concat(
+            dependencies.imported_classes,
+            dependencies.imported_variables
+          ),
         };
 
         filesToProcess.push(fileAnalysis);
 
-        // Update cache with basic analysis
-        cache[relativePath] = {
-          contentHash,
-          timestamp: new Date().toISOString(),
-          analysis: fileAnalysis,
-        };
-        cacheUpdated = true;
+        // Don't create cache entry here - only after successful LLM analysis
       } catch (error) {
         throw new Error(`Failed to read file ${filePath}: ${error}`);
       }
     }
   }
 
-  if (cacheUpdated) {
-    await saveCache(cache);
-  }
+  // Cache will be updated only after successful LLM analysis in updateCacheWithFileAnalysis
 
-  // Sort files to process by complexity (high first) for priority processing
   const sortedFilesToProcess = filesToProcess.sort(
     (a, b) => b.complexity_estimate - a.complexity_estimate
   );
@@ -647,144 +1196,8 @@ function determineComplexityTier(
   return 'low';
 }
 
-function createComplexityBatches(files: FileAnalysisData[]): FileBatch[] {
-  const batches: FileBatch[] = [];
-  const filesByTier = {
-    low: files.filter((f) => f.complexity_tier === 'low'),
-    medium: files.filter((f) => f.complexity_tier === 'medium'),
-    high: files.filter((f) => f.complexity_tier === 'high'),
-  };
-
-  // Process high complexity files individually (1 per batch)
-  filesByTier.high.forEach((file) => {
-    batches.push({
-      files: [file],
-      tier: 'high',
-      batchSize: 1,
-      totalTokenEstimate: estimateTokens(file.content),
-    });
-  });
-
-  // Process medium complexity files in small batches (max 3)
-  const mediumBatches = createBatchesForTier(filesByTier.medium, 3, 6000);
-  batches.push(
-    ...mediumBatches.map((batch) => ({
-      files: batch,
-      tier: 'medium' as const,
-      batchSize: batch.length,
-      totalTokenEstimate: batch.reduce(
-        (sum, f) => sum + estimateTokens(f.content),
-        0
-      ),
-    }))
-  );
-
-  // Process low complexity files in larger batches (max 5)
-  const lowBatches = createBatchesForTier(filesByTier.low, 5, 8000);
-  batches.push(
-    ...lowBatches.map((batch) => ({
-      files: batch,
-      tier: 'low' as const,
-      batchSize: batch.length,
-      totalTokenEstimate: batch.reduce(
-        (sum, f) => sum + estimateTokens(f.content),
-        0
-      ),
-    }))
-  );
-
-  return batches;
-}
-
-function createBatchesForTier(
-  files: FileAnalysisData[],
-  maxFiles: number,
-  maxTokens: number
-): FileAnalysisData[][] {
-  const batches: FileAnalysisData[][] = [];
-  let currentBatch: FileAnalysisData[] = [];
-  let currentTokens = 0;
-
-  for (const file of files) {
-    const fileTokens = estimateTokens(file.content);
-
-    if (
-      currentBatch.length >= maxFiles ||
-      (currentTokens + fileTokens > maxTokens && currentBatch.length > 0)
-    ) {
-      batches.push(currentBatch);
-      currentBatch = [file];
-      currentTokens = fileTokens;
-    } else {
-      currentBatch.push(file);
-      currentTokens += fileTokens;
-    }
-  }
-
-  if (currentBatch.length > 0) {
-    batches.push(currentBatch);
-  }
-
-  return batches;
-}
-
 function estimateTokens(content: string): number {
   return Math.ceil(content.length / 4);
-}
-
-async function processBatchesInParallel(
-  batches: FileBatch[],
-  contexts: any,
-  config: any,
-  options: AnalyzeOptions
-): Promise<BatchAnalysisResult[]> {
-  const results: BatchAnalysisResult[] = [];
-
-  const highBatches = batches.filter((b) => b.tier === 'high');
-  const otherBatches = batches.filter((b) => b.tier !== 'high');
-
-  for (let i = 0; i < highBatches.length; i++) {
-    const batch = highBatches[i];
-    const analysis = await processBatch(
-      batch,
-      contexts,
-      config,
-      i + 1,
-      options
-    );
-    results.push({
-      batchId: i + 1,
-      tier: batch.tier,
-      files: batch.files.map((f) => f.file),
-      analysis,
-    });
-  }
-
-  const concurrencyLimit = 3;
-  for (let i = 0; i < otherBatches.length; i += concurrencyLimit) {
-    const batchGroup = otherBatches.slice(i, i + concurrencyLimit);
-    const groupResults = await Promise.all(
-      batchGroup.map(async (batch, index) => {
-        const batchId = highBatches.length + i + index + 1;
-        const analysis = await processBatch(
-          batch,
-          contexts,
-          config,
-          batchId,
-          options
-        );
-        return {
-          batchId,
-          tier: batch.tier,
-          files: batch.files.map((f) => f.file),
-          analysis,
-        };
-      })
-    );
-    results.push(...groupResults);
-  }
-
-  return results;
 }
 
 function resolveOutputLanguage(
@@ -797,41 +1210,160 @@ function resolveOutputLanguage(
   );
 }
 
-async function processBatch(
-  batch: FileBatch,
-  contexts: any,
+async function processFile(
+  file: FileAnalysisData,
   config: any,
-  batchId: number,
   options: AnalyzeOptions
-): Promise<any> {
+): Promise<FileAnalysisResponse> {
   const outputLanguage = resolveOutputLanguage(options, config);
-  const promptData = {
+
+  const contexts = await collectContextsForFile(file, config);
+
+  const promptData: FileAnalysisPromptContext = {
     projectName: getProjectName(),
-    batchId: batchId.toString(),
-    complexityTier: batch.tier,
-    totalFiles: batch.files.length.toString(),
-    fileAnalysisData: JSON.stringify(batch.files, null, 2),
+    fileName: file.file,
+    language: file.language,
+    fileContent: file.content,
+    fileSize: file.size.toString(),
+    complexityEstimate: file.complexity_estimate.toString(),
+    complexityTier: file.complexity_tier,
     stackContext: contexts.stackContext,
-    ragContext: batch.files.map((f) => f.ragContext).join('\n\n'),
+    ragContext: file.ragContext || 'No RAG context available',
     securityContext: contexts.securityContext,
     integrationContext: contexts.integrationContext,
+    dependencyInfo: JSON.stringify(file.dependencies || {}, null, 2),
     userLanguage: outputLanguage,
+    enableDeadCodeAnalysis: options.deadCode || false,
   };
 
   try {
-    return await execPrompt<any, any>(
-      'analyze/system',
-      promptData,
-      '1.0.0',
-      'default',
-      7,
-      3
-    );
+    const result = await execPrompt<
+      FileAnalysisPromptContext,
+      FileAnalysisResponse
+    >('analyze/consolidated-analysis', promptData, '1.0.0', 'default', 7, 0.3);
+
+    return assertFileAnalysisResponse(result);
   } catch (error) {
-    throw new Error(
-      `Failed to process batch ${batchId} (${batch.tier} complexity): ${error}`
-    );
+    throw new Error(`Failed to process file ${file.file}: ${error}`);
   }
+}
+
+// Security context cache to avoid repeated expensive MCP calls
+let securityReportsCache: {
+  semgrep?: any;
+  trivy?: any;
+  timestamp?: number;
+} = {};
+
+const SECURITY_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+async function getSecurityReports() {
+  const now = Date.now();
+  
+  // Check if cache is still valid
+  if (securityReportsCache.timestamp && 
+      (now - securityReportsCache.timestamp) < SECURITY_CACHE_TTL &&
+      securityReportsCache.semgrep && securityReportsCache.trivy) {
+    return {
+      semgrepReport: securityReportsCache.semgrep,
+      trivyReport: securityReportsCache.trivy
+    };
+  }
+
+  // Cache miss or expired, fetch new data
+  try {
+    const mcpClient = McpClient.fromConfig();
+    const semgrepReport = await mcpClient.semgrepScan();
+    const trivyReport = await mcpClient.trivyScan();
+    
+    // Update cache
+    securityReportsCache = {
+      semgrep: semgrepReport,
+      trivy: trivyReport,
+      timestamp: now
+    };
+    
+    return { semgrepReport, trivyReport };
+  } catch (error) {
+    // Return cached data if available, even if expired
+    if (securityReportsCache.semgrep && securityReportsCache.trivy) {
+      return {
+        semgrepReport: securityReportsCache.semgrep,
+        trivyReport: securityReportsCache.trivy
+      };
+    }
+    throw error;
+  }
+}
+
+async function collectContextsForFile(file: FileAnalysisData, config: any) {
+  const stackContext = await getStackContext();
+
+  let securityContext = '';
+  try {
+    const { semgrepReport, trivyReport } = await getSecurityReports();
+
+    // Filter security findings to only those relevant to the current file
+    const fileSpecificFindings = semgrepReport?.findings?.filter((finding: any) => 
+      finding.path && (
+        finding.path.includes(file.file) || 
+        path.resolve(finding.path) === path.resolve(file.file) ||
+        path.relative(process.cwd(), finding.path) === file.file
+      )
+    ) || [];
+
+    // Only include file-specific findings in context to reduce noise
+    if (fileSpecificFindings.length > 0) {
+      securityContext = JSON.stringify(
+        {
+          file_findings: fileSpecificFindings,
+          findings_summary: `${fileSpecificFindings.length} security issues found in this file`,
+          global_scan_summary: `${semgrepReport?.findings?.length || 0} total semgrep + ${trivyReport?.vulnerabilities?.length || 0} trivy findings in project`,
+        },
+        null,
+        2
+      );
+    } else {
+
+      securityContext = JSON.stringify({
+        file_findings: [],
+        findings_summary: 'No security issues found in this file',
+        global_scan_summary: `${semgrepReport?.findings?.length || 0} total semgrep + ${trivyReport?.vulnerabilities?.length || 0} trivy findings in project`,
+      }, null, 2);
+    }
+  } catch (error) {
+    securityContext = 'Security context unavailable - MCP offline';
+  }
+
+  let integrationContext = '';
+  try {
+    const integrationAnalysis = detectExternalIntegrations(
+      file.file,
+      file.content,
+      file.language
+    );
+
+    if (integrationAnalysis.integrations.length > 0) {
+      integrationContext = JSON.stringify(
+        {
+          file_integration: integrationAnalysis,
+          detection_summary: `${integrationAnalysis.integrations.length} integrations detected in file`,
+        },
+        null,
+        2
+      );
+    } else {
+      integrationContext = 'No external integrations detected in this file';
+    }
+  } catch (error) {
+    integrationContext = `Integration detection failed: ${error}`;
+  }
+
+  return {
+    stackContext: JSON.stringify(stackContext, null, 2),
+    securityContext,
+    integrationContext,
+  };
 }
 
 async function collectContexts(files: FileAnalysisData[], config: any) {
@@ -936,22 +1468,36 @@ async function saveAnalysisResults(
     !options.format
   ) {
     const markdownPath = path.join(reportsDir, `${baseFilename}.md`);
-    const markdownContent = generateMarkdownReport(result, true);
+    const markdownContent = generateMarkdownReport(result);
     await fs.promises.writeFile(markdownPath, markdownContent);
+  }
+
+  // Save dependency graph as separate file if generated
+  if (result.dependency_graph) {
+    const graphExtension =
+      result.dependency_graph.format === 'plantuml'
+        ? 'puml'
+        : result.dependency_graph.format === 'structurizr'
+          ? 'dsl'
+          : 'mmd';
+    const graphPath = path.join(
+      reportsDir,
+      `${baseFilename}_dependencies.${graphExtension}`
+    );
+    await fs.promises.writeFile(graphPath, result.dependency_graph.diagram);
+
+    getLogger().info(`Dependency graph saved to: ${graphPath}`);
   }
 }
 
-function generateMarkdownReport(
-  result: AnalysisResult,
-  detailed: boolean = true
-): string {
+function generateMarkdownReport(result: AnalysisResult): string {
   const executionTime = result.metadata.timestamp
     ? `**Execution Time**: Analysis completed at ${new Date(result.metadata.timestamp).toLocaleString()}`
     : '';
 
-  let markdown = `# 🔍 Code Analysis Report
+  let markdown = `# Code Analysis Report
 
-## 📋 Summary
+## Summary
 
 **Project**: ${result.metadata.projectName}  
 **Files Analyzed**: ${result.metadata.totalFiles}  
@@ -960,7 +1506,7 @@ function generateMarkdownReport(
 **Overall Score**: ${result.metrics.overall_project_score}/10  
 ${executionTime}
 
-## 📊 Metrics
+## Metrics
 
 - **Overall Project Score**: ${result.metrics.overall_project_score}/10
 - **Total Issues Found**: ${result.metrics.total_issues}
@@ -970,7 +1516,7 @@ ${executionTime}
 
 ${result.consolidated_findings.critical_issues?.map((issue: string) => `- ${issue}`).join('\n') || 'No critical issues found'}
 
-## 🔧 Recommendations
+## Recommendations
 
 ### Immediate Actions
 ${result.recommendations.immediate_actions?.map((action: string) => `- ${action}`).join('\n') || 'No immediate actions required'}
@@ -981,8 +1527,22 @@ ${result.recommendations.short_term_improvements?.map((improvement: string) => `
 ### Long-term Strategic
 ${result.recommendations.long_term_strategic?.map((strategic: string) => `- ${strategic}`).join('\n') || 'No long-term strategic recommendations'}`;
 
-  // Add detailed file-by-file analysis
-  if (detailed && result.file_analyses && result.file_analyses.length > 0) {
+  // Add dependency graph if present
+  if (result.dependency_graph) {
+    markdown += `\n\n## 📊 Dependency Graph (${result.dependency_graph.format.toUpperCase()})
+
+\`\`\`${result.dependency_graph.format}
+${result.dependency_graph.diagram}
+\`\`\`
+
+### Graph Statistics
+- **Total Nodes**: ${result.dependency_graph.nodes.length}
+- **Total Dependencies**: ${result.dependency_graph.nodes.reduce((sum, node) => sum + node.dependencies.length, 0)}
+- **Files with Dependencies**: ${result.dependency_graph.nodes.filter((node) => node.dependencies.length > 0).length}
+- **Files with Dependents**: ${result.dependency_graph.nodes.filter((node) => node.dependents.length > 0).length}`;
+  }
+
+  if (result.file_analyses && result.file_analyses.length > 0) {
     markdown += `\n\n---
 
 ## 📄 File-by-File Analysis
@@ -990,26 +1550,21 @@ ${result.recommendations.long_term_strategic?.map((strategic: string) => `- ${st
 `;
 
     result.file_analyses.forEach((fileAnalysis: any, index: number) => {
-      const riskLevel = getRiskLevelEmoji(
-        fileAnalysis.overall_assessment?.risk_level
-      );
-      const scores =
-        fileAnalysis.clean_code_analysis?.clean_code_score || 'N/A';
-      const securityScore =
-        fileAnalysis.security_analysis?.security_score || 'N/A';
+      const scores = fileAnalysis.analysis?.clean_code?.score || 'N/A';
+      const securityScore = fileAnalysis.analysis?.security?.score || 'N/A';
       const maintainabilityScore =
-        fileAnalysis.maintainability_analysis?.maintainability_score || 'N/A';
+        fileAnalysis.analysis?.maintainability?.score || 'N/A';
       const performanceScore =
-        fileAnalysis.performance_analysis?.performance_score || 'N/A';
+        fileAnalysis.analysis?.performance?.score || 'N/A';
 
       markdown += `### ${index + 1}. \`${fileAnalysis.file}\`
 
 | Property | Value |
 |----------|-------|
 | **Language** | ${fileAnalysis.language} |
-| **Risk Level** | ${riskLevel} ${fileAnalysis.overall_assessment?.risk_level?.toUpperCase() || 'UNKNOWN'} |
+| **Overall Score** | ${fileAnalysis.overall_score || 'N/A'}/10 |
 
-#### 📊 Quality Scores
+#### Quality Scores
 
 | Metric | Score |
 |--------|-------|
@@ -1018,27 +1573,31 @@ ${result.recommendations.long_term_strategic?.map((strategic: string) => `- ${st
 | Maintainability | ${maintainabilityScore}/10 |
 | Performance | ${performanceScore}/10 |
 
-#### 🎯 Purpose
+#### Purpose
 
 ${fileAnalysis.purpose || 'No purpose description available'}
 
 #### 🚨 Security Analysis
 
-${formatSecurityAnalysis(fileAnalysis.security_analysis)}
+${formatSecurityAnalysis(fileAnalysis.analysis?.security)}
 
 #### 🧹 Clean Code Issues
 
-${formatCleanCodeAnalysis(fileAnalysis.clean_code_analysis)}
+${formatCleanCodeAnalysis(fileAnalysis.analysis?.clean_code)}
 
-#### 🏗️ SOLID Analysis
+#### SOLID Analysis
 
-${formatSolidAnalysis(fileAnalysis.solid_analysis)}
+${formatSolidAnalysis(fileAnalysis.analysis?.solid_principles)}
 
-#### 🔧 Performance Analysis
+#### Performance Analysis
 
-${formatPerformanceAnalysis(fileAnalysis.performance_analysis)}
+${formatPerformanceAnalysis(fileAnalysis.analysis?.performance)}
 
-#### 💡 Recommendations
+#### Dead Code Analysis
+
+${formatDeadCodeAnalysis(fileAnalysis.analysis?.dead_code_analysis)}
+
+#### Recommendations
 
 ${formatRecommendations(fileAnalysis.recommendations)}
 
@@ -1048,24 +1607,66 @@ ${formatRecommendations(fileAnalysis.recommendations)}
     });
   }
 
+  // Add dead code analysis if present
+  if (result.dead_code) {
+    markdown += `\n\n## 🧹 Dead Code Analysis
+
+### Summary
+- **Unused Functions**: ${result.dead_code.summary.total_unused_functions}
+- **Unused Classes**: ${result.dead_code.summary.total_unused_classes}  
+- **Unused Files**: ${result.dead_code.summary.total_unused_files}
+- **Orphaned Exports**: ${result.dead_code.summary.total_orphaned_exports}
+- **Circular Dependencies**: ${result.dead_code.summary.circular_dependency_count}
+
+### Unused Functions
+${
+  result.dead_code.analysis.unused_functions.length > 0
+    ? result.dead_code.analysis.unused_functions
+        .map((fn) => `- ${fn}`)
+        .join('\n')
+    : 'No unused functions found'
+}
+
+### Unused Classes  
+${
+  result.dead_code.analysis.unused_classes.length > 0
+    ? result.dead_code.analysis.unused_classes
+        .map((cls) => `- ${cls}`)
+        .join('\n')
+    : 'No unused classes found'
+}
+
+### Unused Files
+${
+  result.dead_code.analysis.unused_files.length > 0
+    ? result.dead_code.analysis.unused_files
+        .map((file) => `- ${file}`)
+        .join('\n')
+    : 'No unused files found'
+}
+
+### Orphaned Exports
+${
+  result.dead_code.analysis.orphaned_exports.length > 0
+    ? result.dead_code.analysis.orphaned_exports
+        .map((exp) => `- ${exp}`)
+        .join('\n')
+    : 'No orphaned exports found'
+}
+
+### Circular Dependencies
+${
+  result.dead_code.analysis.circular_dependencies.length > 0
+    ? result.dead_code.analysis.circular_dependencies
+        .map((cycle) => `- ${cycle}`)
+        .join('\n')
+    : 'No circular dependencies found'
+}`;
+  }
+
   markdown += `\n*Analysis generated by CLIA v1.0.0*\n`;
 
   return markdown;
-}
-
-function getRiskLevelEmoji(riskLevel: string): string {
-  switch (riskLevel?.toLowerCase()) {
-    case 'critical':
-      return '🔴';
-    case 'high':
-      return '🔥';
-    case 'medium':
-      return '🟡';
-    case 'low':
-      return '🟢';
-    default:
-      return '⚪';
-  }
 }
 
 function formatSecurityAnalysis(securityAnalysis: any): string {
@@ -1293,6 +1894,83 @@ function formatPerformanceAnalysis(performanceAnalysis: any): string {
   return content || 'No performance issues identified';
 }
 
+function formatDeadCodeAnalysis(deadCodeAnalysis: any): string {
+  if (!deadCodeAnalysis) return 'No dead code analysis available';
+
+  let content = '';
+
+  if (
+    deadCodeAnalysis.unused_private_functions &&
+    deadCodeAnalysis.unused_private_functions.length > 0
+  ) {
+    content += '**Unused Private Functions:**\n';
+    deadCodeAnalysis.unused_private_functions.forEach((func: any) => {
+      if (typeof func === 'string') {
+        content += `- ${func}\n`;
+      } else {
+        content += `- ${func.name}`;
+        if (func.line) content += ` (line ${func.line})`;
+        content += '\n';
+        if (func.reason) content += `  *Reason*: ${func.reason}\n`;
+      }
+    });
+    content += '\n';
+  }
+
+  if (
+    deadCodeAnalysis.unused_private_classes &&
+    deadCodeAnalysis.unused_private_classes.length > 0
+  ) {
+    content += '**Unused Private Classes:**\n';
+    deadCodeAnalysis.unused_private_classes.forEach((cls: any) => {
+      if (typeof cls === 'string') {
+        content += `- ${cls}\n`;
+      } else {
+        content += `- ${cls.name}`;
+        if (cls.line) content += ` (line ${cls.line})`;
+        content += '\n';
+        if (cls.reason) content += `  *Reason*: ${cls.reason}\n`;
+      }
+    });
+    content += '\n';
+  }
+
+  if (
+    deadCodeAnalysis.unused_private_variables &&
+    deadCodeAnalysis.unused_private_variables.length > 0
+  ) {
+    content += '**Unused Private Variables:**\n';
+    deadCodeAnalysis.unused_private_variables.forEach((variable: any) => {
+      if (typeof variable === 'string') {
+        content += `- ${variable}\n`;
+      } else {
+        content += `- ${variable.name}`;
+        if (variable.line) content += ` (line ${variable.line})`;
+        content += '\n';
+        if (variable.reason) content += `  *Reason*: ${variable.reason}\n`;
+      }
+    });
+    content += '\n';
+  }
+
+  if (
+    deadCodeAnalysis.unreachable_code &&
+    deadCodeAnalysis.unreachable_code.length > 0
+  ) {
+    content += '**Unreachable Code:**\n';
+    deadCodeAnalysis.unreachable_code.forEach((code: any) => {
+      if (typeof code === 'string') {
+        content += `- ${code}\n`;
+      } else {
+        content += `- ${code.location}\n`;
+        if (code.reason) content += `  *Reason*: ${code.reason}\n`;
+      }
+    });
+  }
+
+  return content || 'No dead code identified in this file';
+}
+
 function formatRecommendations(recommendations: any): string {
   if (!recommendations) return 'No specific recommendations available';
 
@@ -1385,13 +2063,17 @@ function formatRecommendations(recommendations: any): string {
   return content || 'No specific recommendations available';
 }
 
-function displaySummary(result: AnalysisResult) {
+function displaySummary(result: AnalysisResult): void {
   const logger = getLogger();
 
-  logger.info('📊 Analysis completed');
-  logger.info(`   📝 Files: ${result.metadata.totalFiles}`);
-  logger.info(`   📊 Score: ${result.metrics.overall_project_score}/10`);
-  logger.info(`   🚨 Issues: ${result.metrics.total_issues}`);
+  logger.info('Analysis completed');
+  logger.info(`Files: ${result.metadata.totalFiles}`);
+  logger.info(
+    `Score: ${(result.metrics as { overall_project_score: number }).overall_project_score}/10`
+  );
+  logger.info(
+    `Issues: ${(result.metrics as { total_issues: number }).total_issues}`
+  );
 }
 
 // Utility functions
@@ -1511,4 +2193,1582 @@ function getComplexityPatternsForLanguage(language: string): RegExp[] {
         /\([\s\S]*?\)/g, // Function calls
       ];
   }
+}
+
+/**
+ * Extract dependencies from source code
+ */
+function extractDependencies(
+  content: string,
+  language: string,
+  filePath: string
+): DependencyInfo {
+  const dependencies: DependencyInfo = {
+    internal_imports: [],
+    external_imports: [],
+    exported_functions: [],
+    exported_classes: [],
+    exported_variables: [],
+    imported_functions: [],
+    imported_classes: [],
+    imported_variables: [],
+    private_functions: [],
+    private_classes: [],
+    private_variables: [],
+  };
+
+  // Language-specific dependency extraction for all 9 supported languages
+  switch (language.toLowerCase()) {
+    case 'typescript':
+    case 'javascript':
+      extractJavaScriptDependencies(content, dependencies, filePath);
+      break;
+    case 'python':
+      extractPythonDependencies(content, dependencies, filePath);
+      break;
+    case 'java':
+      extractJavaDependencies(content, dependencies, filePath);
+      break;
+    case 'csharp':
+    case 'c#':
+      extractCSharpDependencies(content, dependencies, filePath);
+      break;
+    case 'ruby':
+      extractRubyDependencies(content, dependencies, filePath);
+      break;
+    case 'rust':
+      extractRustDependencies(content, dependencies, filePath);
+      break;
+    case 'php':
+      extractPhpDependencies(content, dependencies, filePath);
+      break;
+    case 'go':
+    case 'golang':
+      extractGoDependencies(content, dependencies, filePath);
+      break;
+    default:
+      extractGenericDependencies(content, dependencies);
+  }
+
+  return dependencies;
+}
+
+/**
+ * Extract JavaScript/TypeScript dependencies
+ */
+function extractJavaScriptDependencies(
+  content: string,
+  dependencies: DependencyInfo,
+  filePath: string
+): void {
+  // Import statements (including type imports)
+  const importRegex =
+    /import\s+(?:type\s+)?(?:\{([^}]+)\}|\*\s+as\s+(\w+)|(\w+))\s+from\s+['"`]([^'"`]+)['"`]/g;
+  let match;
+
+  while ((match = importRegex.exec(content)) !== null) {
+    const importPath = match[4];
+    const isInternal = importPath.startsWith('.') || importPath.startsWith('/');
+
+    if (isInternal) {
+      dependencies.internal_imports.push(importPath);
+    } else {
+      dependencies.external_imports.push(importPath);
+    }
+
+    if (match[1]) {
+      // Named imports (including type imports)
+      const namedImports = match[1]
+        .split(',')
+        .map((imp) => imp.trim().replace(/^type\s+/, ''));
+      dependencies.imported_functions.push(...namedImports);
+    } else if (match[2]) {
+      // Namespace import
+      dependencies.imported_variables.push(match[2]);
+    } else if (match[3]) {
+      // Default import
+      dependencies.imported_variables.push(match[3]);
+    }
+  }
+
+  // Type-only imports (alternative pattern)
+  const typeImportRegex =
+    /import\s+type\s+\{([^}]+)\}\s+from\s+['"`]([^'"`]+)['"`]/g;
+  while ((match = typeImportRegex.exec(content)) !== null) {
+    const importPath = match[2];
+    const isInternal = importPath.startsWith('.') || importPath.startsWith('/');
+
+    if (isInternal && !dependencies.internal_imports.includes(importPath)) {
+      dependencies.internal_imports.push(importPath);
+    } else if (
+      !isInternal &&
+      !dependencies.external_imports.includes(importPath)
+    ) {
+      dependencies.external_imports.push(importPath);
+    }
+
+    const namedImports = match[1].split(',').map((imp) => imp.trim());
+    namedImports.forEach((imp) => {
+      if (!dependencies.imported_functions.includes(imp)) {
+        dependencies.imported_functions.push(imp);
+      }
+    });
+  }
+
+  // Individual type imports (e.g., import type { SomeType } from './module')
+  const individualTypeImportRegex =
+    /import\s+type\s+(\w+)\s+from\s+['"`]([^'"`]+)['"`]/g;
+  while ((match = individualTypeImportRegex.exec(content)) !== null) {
+    const importPath = match[2];
+    const typeName = match[1];
+    const isInternal = importPath.startsWith('.') || importPath.startsWith('/');
+
+    if (isInternal && !dependencies.internal_imports.includes(importPath)) {
+      dependencies.internal_imports.push(importPath);
+    } else if (
+      !isInternal &&
+      !dependencies.external_imports.includes(importPath)
+    ) {
+      dependencies.external_imports.push(importPath);
+    }
+
+    if (!dependencies.imported_variables.includes(typeName)) {
+      dependencies.imported_variables.push(typeName);
+    }
+  }
+
+  // Export statements
+  const exportRegex =
+    /export\s+(?:default\s+)?(?:(function|class|const|let|var)\s+(\w+)|(\w+))/g;
+  while ((match = exportRegex.exec(content)) !== null) {
+    const type = match[1];
+    const name = match[2] || match[3];
+
+    if (type === 'function') {
+      dependencies.exported_functions.push(name);
+    } else if (type === 'class') {
+      dependencies.exported_classes.push(name);
+    } else {
+      dependencies.exported_variables.push(name);
+    }
+  }
+
+  // Private functions (not exported) - including function declarations, expressions, and arrow functions
+  const privateFunctionRegex =
+    /(?<!export\s+)(?<!export\s+default\s+)function\s+(\w+)/g;
+  while ((match = privateFunctionRegex.exec(content)) !== null) {
+    const name = match[1];
+    if (!dependencies.exported_functions.includes(name)) {
+      dependencies.private_functions.push(name);
+    }
+  }
+
+  // Arrow functions and function expressions assigned to variables
+  const arrowFunctionRegex =
+    /(?<!export\s+)(const|let|var)\s+(\w+)\s*=\s*(?:\([^)]*\)\s*=>|\w+\s*=>|async\s*\([^)]*\)\s*=>|async\s+\w+\s*=>)/g;
+  while ((match = arrowFunctionRegex.exec(content)) !== null) {
+    const name = match[2];
+    if (
+      !dependencies.exported_functions.includes(name) &&
+      !dependencies.exported_variables.includes(name)
+    ) {
+      dependencies.private_functions.push(name);
+    }
+  }
+
+  // Function expressions
+  const functionExpressionRegex =
+    /(?<!export\s+)(const|let|var)\s+(\w+)\s*=\s*function/g;
+  while ((match = functionExpressionRegex.exec(content)) !== null) {
+    const name = match[2];
+    if (
+      !dependencies.exported_functions.includes(name) &&
+      !dependencies.exported_variables.includes(name)
+    ) {
+      dependencies.private_functions.push(name);
+    }
+  }
+
+  // Private classes (not exported)
+  const privateClassRegex =
+    /(?<!export\s+)(?<!export\s+default\s+)class\s+(\w+)/g;
+  while ((match = privateClassRegex.exec(content)) !== null) {
+    const name = match[1];
+    if (!dependencies.exported_classes.includes(name)) {
+      dependencies.private_classes.push(name);
+    }
+  }
+
+  // Private variables (const, let, var not exported)
+  const privateVarRegex = /(?<!export\s+)(const|let|var)\s+(\w+)\s*=/g;
+  while ((match = privateVarRegex.exec(content)) !== null) {
+    const name = match[2];
+    if (!dependencies.exported_variables.includes(name)) {
+      dependencies.private_variables.push(name);
+    }
+  }
+}
+
+/**
+ * Extract Python dependencies
+ */
+function extractPythonDependencies(
+  content: string,
+  dependencies: DependencyInfo,
+  filePath: string
+): void {
+  // Import statements
+  const importRegex = /^(?:from\s+(\S+)\s+)?import\s+(.+)$/gm;
+  let match;
+
+  while ((match = importRegex.exec(content)) !== null) {
+    const fromModule = match[1];
+    const imports = match[2].split(',').map((imp) => imp.trim());
+
+    if (fromModule) {
+      const isInternal =
+        fromModule.startsWith('.') || !fromModule.includes('.');
+      if (isInternal) {
+        dependencies.internal_imports.push(fromModule);
+      } else {
+        dependencies.external_imports.push(fromModule);
+      }
+    }
+
+    dependencies.imported_functions.push(...imports);
+  }
+
+  // Function definitions (all functions are considered private unless explicitly exported)
+  const functionRegex = /^def\s+(\w+)/gm;
+  while ((match = functionRegex.exec(content)) !== null) {
+    const name = match[1];
+    if (name.startsWith('_')) {
+      // Python convention: functions starting with _ are private
+      dependencies.private_functions.push(name);
+    } else {
+      dependencies.exported_functions.push(name);
+    }
+  }
+
+  // Class definitions
+  const classRegex = /^class\s+(\w+)/gm;
+  while ((match = classRegex.exec(content)) !== null) {
+    const name = match[1];
+    if (name.startsWith('_')) {
+      // Python convention: classes starting with _ are private
+      dependencies.private_classes.push(name);
+    } else {
+      dependencies.exported_classes.push(name);
+    }
+  }
+
+  // Variable definitions (global scope)
+  const variableRegex = /^(\w+)\s*=\s*[^=]/gm;
+  while ((match = variableRegex.exec(content)) !== null) {
+    const name = match[1];
+    if (
+      ![
+        'import',
+        'from',
+        'def',
+        'class',
+        'if',
+        'for',
+        'while',
+        'with',
+        'try',
+      ].includes(name)
+    ) {
+      if (name.startsWith('_')) {
+        dependencies.private_variables.push(name);
+      } else {
+        dependencies.exported_variables.push(name);
+      }
+    }
+  }
+}
+
+/**
+ * Extract Java dependencies
+ */
+function extractJavaDependencies(
+  content: string,
+  dependencies: DependencyInfo,
+  filePath: string
+): void {
+  // Import statements
+  const importRegex = /import\s+(?:static\s+)?([^;]+);/g;
+  let match;
+
+  while ((match = importRegex.exec(content)) !== null) {
+    const importPath = match[1];
+    const isInternal =
+      !importPath.includes('java.') && !importPath.includes('javax.');
+
+    if (isInternal) {
+      dependencies.internal_imports.push(importPath);
+    } else {
+      dependencies.external_imports.push(importPath);
+    }
+  }
+
+  // Class definitions
+  const classRegex = /(public|private|protected)?\s*class\s+(\w+)/g;
+  while ((match = classRegex.exec(content)) !== null) {
+    const visibility = match[1] || 'package';
+    const name = match[2];
+    if (visibility === 'private') {
+      dependencies.private_classes.push(name);
+    } else {
+      dependencies.exported_classes.push(name);
+    }
+  }
+
+  // Method definitions
+  const methodRegex =
+    /(public|private|protected)?\s*(?:static\s+)?[\w<>]+\s+(\w+)\s*\(/g;
+  while ((match = methodRegex.exec(content)) !== null) {
+    const visibility = match[1] || 'package';
+    const name = match[2];
+    if (visibility === 'private') {
+      dependencies.private_functions.push(name);
+    } else {
+      dependencies.exported_functions.push(name);
+    }
+  }
+}
+
+/**
+ * Extract C# dependencies
+ */
+function extractCSharpDependencies(
+  content: string,
+  dependencies: DependencyInfo,
+  filePath: string
+): void {
+  // Using statements
+  const usingRegex = /using\s+([^;]+);/g;
+  let match;
+
+  while ((match = usingRegex.exec(content)) !== null) {
+    const usingPath = match[1];
+    const isInternal =
+      !usingPath.startsWith('System') && !usingPath.startsWith('Microsoft');
+
+    if (isInternal) {
+      dependencies.internal_imports.push(usingPath);
+    } else {
+      dependencies.external_imports.push(usingPath);
+    }
+  }
+
+  // Class definitions
+  const classRegex = /(public|private|internal|protected)?\s*class\s+(\w+)/g;
+  while ((match = classRegex.exec(content)) !== null) {
+    const visibility = match[1] || 'internal';
+    const name = match[2];
+    if (visibility === 'private') {
+      dependencies.private_classes.push(name);
+    } else {
+      dependencies.exported_classes.push(name);
+    }
+  }
+
+  // Method definitions
+  const methodRegex =
+    /(public|private|protected|internal)?\s*(?:static\s+)?[\w<>]+\s+(\w+)\s*\(/g;
+  while ((match = methodRegex.exec(content)) !== null) {
+    const visibility = match[1] || 'internal';
+    const name = match[2];
+    if (visibility === 'private') {
+      dependencies.private_functions.push(name);
+    } else {
+      dependencies.exported_functions.push(name);
+    }
+  }
+}
+
+/**
+ * Extract Ruby dependencies
+ */
+function extractRubyDependencies(
+  content: string,
+  dependencies: DependencyInfo,
+  filePath: string
+): void {
+  // Require statements
+  const requireRegex = /require\s+['"]([^'"]+)['"]/g;
+  let match;
+
+  while ((match = requireRegex.exec(content)) !== null) {
+    const requirePath = match[1];
+    const isInternal =
+      requirePath.startsWith('.') || !requirePath.includes('/');
+
+    if (isInternal) {
+      dependencies.internal_imports.push(requirePath);
+    } else {
+      dependencies.external_imports.push(requirePath);
+    }
+  }
+
+  // Gem statements from Gemfile
+  const gemRegex = /gem\s+['"]([^'"]+)['"]/g;
+  while ((match = gemRegex.exec(content)) !== null) {
+    dependencies.external_imports.push(match[1]);
+  }
+
+  // Class definitions
+  const classRegex = /^\s*class\s+(\w+)/gm;
+  while ((match = classRegex.exec(content)) !== null) {
+    dependencies.exported_classes.push(match[1]);
+  }
+
+  // Method definitions (check for private keyword)
+  const methodRegex = /^\s*def\s+(\w+)/gm;
+  const privateMethodRegex = /private[\s\S]*?def\s+(\w+)/g;
+  const privateMethods = new Set<string>();
+
+  while ((match = privateMethodRegex.exec(content)) !== null) {
+    privateMethods.add(match[1]);
+  }
+
+  content.replace(methodRegex, (match, name) => {
+    if (privateMethods.has(name)) {
+      dependencies.private_functions.push(name);
+    } else {
+      dependencies.exported_functions.push(name);
+    }
+    return match;
+  });
+
+  // Module definitions
+  const moduleRegex = /^\s*module\s+(\w+)/gm;
+  while ((match = moduleRegex.exec(content)) !== null) {
+    dependencies.exported_classes.push(match[1]);
+  }
+
+  // Instance variables (private by default in Ruby)
+  const instanceVarRegex = /@(\w+)/g;
+  while ((match = instanceVarRegex.exec(content)) !== null) {
+    dependencies.private_variables.push(`@${match[1]}`);
+  }
+}
+
+/**
+ * Extract Rust dependencies
+ */
+function extractRustDependencies(
+  content: string,
+  dependencies: DependencyInfo,
+  filePath: string
+): void {
+  // Use statements
+  const useRegex = /use\s+([^;]+);/g;
+  let match;
+
+  while ((match = useRegex.exec(content)) !== null) {
+    const usePath = match[1];
+    const isInternal =
+      usePath.startsWith('crate::') ||
+      usePath.startsWith('super::') ||
+      usePath.startsWith('self::');
+
+    if (isInternal) {
+      dependencies.internal_imports.push(usePath);
+    } else {
+      dependencies.external_imports.push(usePath);
+    }
+
+    // Extract imported items
+    const importedItem = usePath.split('::').pop()?.replace(/[{}]/g, '');
+    if (importedItem) {
+      dependencies.imported_functions.push(importedItem);
+    }
+  }
+
+  // Function definitions (pub = public, no pub = private)
+  const publicFunctionRegex = /pub\s+fn\s+(\w+)/g;
+  const privateFunctionRegex = /(?<!pub\s+)fn\s+(\w+)/g;
+
+  while ((match = publicFunctionRegex.exec(content)) !== null) {
+    dependencies.exported_functions.push(match[1]);
+  }
+
+  while ((match = privateFunctionRegex.exec(content)) !== null) {
+    const name = match[1];
+    if (!dependencies.exported_functions.includes(name)) {
+      dependencies.private_functions.push(name);
+    }
+  }
+
+  // Struct definitions
+  const publicStructRegex = /pub\s+struct\s+(\w+)/g;
+  const privateStructRegex = /(?<!pub\s+)struct\s+(\w+)/g;
+
+  while ((match = publicStructRegex.exec(content)) !== null) {
+    dependencies.exported_classes.push(match[1]);
+  }
+
+  while ((match = privateStructRegex.exec(content)) !== null) {
+    const name = match[1];
+    if (!dependencies.exported_classes.includes(name)) {
+      dependencies.private_classes.push(name);
+    }
+  }
+
+  // Enum definitions
+  const publicEnumRegex = /pub\s+enum\s+(\w+)/g;
+  const privateEnumRegex = /(?<!pub\s+)enum\s+(\w+)/g;
+
+  while ((match = publicEnumRegex.exec(content)) !== null) {
+    dependencies.exported_classes.push(match[1]);
+  }
+
+  while ((match = privateEnumRegex.exec(content)) !== null) {
+    const name = match[1];
+    if (!dependencies.exported_classes.includes(name)) {
+      dependencies.private_classes.push(name);
+    }
+  }
+
+  // Trait definitions
+  const publicTraitRegex = /pub\s+trait\s+(\w+)/g;
+  const privateTraitRegex = /(?<!pub\s+)trait\s+(\w+)/g;
+
+  while ((match = publicTraitRegex.exec(content)) !== null) {
+    dependencies.exported_classes.push(match[1]);
+  }
+
+  while ((match = privateTraitRegex.exec(content)) !== null) {
+    const name = match[1];
+    if (!dependencies.exported_classes.includes(name)) {
+      dependencies.private_classes.push(name);
+    }
+  }
+}
+
+/**
+ * Extract PHP dependencies
+ */
+function extractPhpDependencies(
+  content: string,
+  dependencies: DependencyInfo,
+  filePath: string
+): void {
+  // Use statements
+  const useRegex = /use\s+([^;]+);/g;
+  let match;
+
+  while ((match = useRegex.exec(content)) !== null) {
+    const usePath = match[1];
+    const isInternal =
+      !usePath.includes('\\\\') && !usePath.match(/^[A-Z][a-zA-Z]+\\/);
+
+    if (isInternal) {
+      dependencies.internal_imports.push(usePath);
+    } else {
+      dependencies.external_imports.push(usePath);
+    }
+  }
+
+  // Require/include statements
+  const requireRegex =
+    /(?:require|include)(?:_once)?\s*\(?['"]([^'"]+)['"]\)?/g;
+  while ((match = requireRegex.exec(content)) !== null) {
+    const requirePath = match[1];
+    const isInternal =
+      requirePath.startsWith('.') || !requirePath.includes('vendor/');
+
+    if (isInternal) {
+      dependencies.internal_imports.push(requirePath);
+    } else {
+      dependencies.external_imports.push(requirePath);
+    }
+  }
+
+  // Class definitions
+  const classRegex = /(?:abstract\s+)?class\s+(\w+)/g;
+  while ((match = classRegex.exec(content)) !== null) {
+    dependencies.exported_classes.push(match[1]);
+  }
+
+  // Function definitions (global functions)
+  const functionRegex = /function\s+(\w+)/g;
+  while ((match = functionRegex.exec(content)) !== null) {
+    dependencies.exported_functions.push(match[1]);
+  }
+
+  // Method definitions with visibility
+  const privateMethodRegex = /private\s+function\s+(\w+)/g;
+  const protectedMethodRegex = /protected\s+function\s+(\w+)/g;
+  const publicMethodRegex = /public\s+function\s+(\w+)/g;
+
+  while ((match = privateMethodRegex.exec(content)) !== null) {
+    dependencies.private_functions.push(match[1]);
+  }
+
+  while ((match = protectedMethodRegex.exec(content)) !== null) {
+    dependencies.private_functions.push(match[1]); // Protected treated as private scope
+  }
+
+  while ((match = publicMethodRegex.exec(content)) !== null) {
+    dependencies.exported_functions.push(match[1]);
+  }
+
+  // Private properties
+  const privatePropertyRegex = /private\s+\$(\w+)/g;
+  while ((match = privatePropertyRegex.exec(content)) !== null) {
+    dependencies.private_variables.push(`$${match[1]}`);
+  }
+
+  // Interface definitions
+  const interfaceRegex = /interface\s+(\w+)/g;
+  while ((match = interfaceRegex.exec(content)) !== null) {
+    dependencies.exported_classes.push(match[1]);
+  }
+
+  // Trait definitions
+  const traitRegex = /trait\s+(\w+)/g;
+  while ((match = traitRegex.exec(content)) !== null) {
+    dependencies.exported_classes.push(match[1]);
+  }
+}
+
+/**
+ * Extract Go dependencies
+ */
+function extractGoDependencies(
+  content: string,
+  dependencies: DependencyInfo,
+  filePath: string
+): void {
+  // Import statements
+  const importRegex = /import\s+(?:\(([^)]+)\)|['"]([^'"]+)['"])/g;
+  let match;
+
+  while ((match = importRegex.exec(content)) !== null) {
+    if (match[1]) {
+      // Multi-line imports
+      const imports = match[1]
+        .split('\n')
+        .map((line) => {
+          const importMatch = line.match(/['"]([^'"]+)['"]/);
+          return importMatch ? importMatch[1] : null;
+        })
+        .filter(Boolean);
+
+      imports.forEach((importPath) => {
+        if (importPath) {
+          const isInternal =
+            importPath.startsWith('.') || !importPath.includes('.');
+          if (isInternal) {
+            dependencies.internal_imports.push(importPath);
+          } else {
+            dependencies.external_imports.push(importPath);
+          }
+        }
+      });
+    } else if (match[2]) {
+      // Single import
+      const importPath = match[2];
+      const isInternal =
+        importPath.startsWith('.') || !importPath.includes('.');
+
+      if (isInternal) {
+        dependencies.internal_imports.push(importPath);
+      } else {
+        dependencies.external_imports.push(importPath);
+      }
+    }
+  }
+
+  // Function definitions (uppercase = public, lowercase = private in Go)
+  const functionRegex = /func\s+(\w+)/g;
+  while ((match = functionRegex.exec(content)) !== null) {
+    const name = match[1];
+    if (name[0] === name[0].toUpperCase()) {
+      dependencies.exported_functions.push(name);
+    } else {
+      dependencies.private_functions.push(name);
+    }
+  }
+
+  // Type definitions (structs, interfaces)
+  const typeRegex = /type\s+(\w+)\s+(?:struct|interface)/g;
+  while ((match = typeRegex.exec(content)) !== null) {
+    const name = match[1];
+    if (name[0] === name[0].toUpperCase()) {
+      dependencies.exported_classes.push(name);
+    } else {
+      dependencies.private_classes.push(name);
+    }
+  }
+
+  // Variable definitions
+  const varRegex = /var\s+(\w+)\s+/g;
+  while ((match = varRegex.exec(content)) !== null) {
+    const name = match[1];
+    if (name[0] === name[0].toUpperCase()) {
+      dependencies.exported_variables.push(name);
+    } else {
+      dependencies.private_variables.push(name);
+    }
+  }
+
+  // Constant definitions
+  const constRegex = /const\s+(\w+)\s+/g;
+  while ((match = constRegex.exec(content)) !== null) {
+    const name = match[1];
+    if (name[0] === name[0].toUpperCase()) {
+      dependencies.exported_variables.push(name);
+    } else {
+      dependencies.private_variables.push(name);
+    }
+  }
+}
+
+/**
+ * Generic dependency extraction for unknown languages
+ */
+function extractGenericDependencies(
+  content: string,
+  dependencies: DependencyInfo
+): void {
+  // Look for common import/include patterns
+  const includeRegex = /#include\s+[<"]([^>"]+)[>"]/g;
+  let match;
+
+  while ((match = includeRegex.exec(content)) !== null) {
+    dependencies.external_imports.push(match[1]);
+  }
+}
+
+/**
+ * Build dependency graph from file analysis data
+ */
+async function buildDependencyGraph(
+  files: FileAnalysisData[]
+): Promise<DependencyNode[]> {
+
+  
+  const nodes: DependencyNode[] = [];
+  const fileMap = new Map<string, FileAnalysisData>();
+
+  // Create file map for quick lookup
+  files.forEach((file) => {
+    fileMap.set(file.file, file);
+  });
+
+  // Build dependency nodes
+  for (const file of files) {
+    const dependencies: string[] = [];
+    const dependents: string[] = [];
+
+    // Find internal dependencies
+    if (file.dependencies) {
+      for (const internalImport of file.dependencies.internal_imports) {
+        // Resolve relative paths
+        const resolvedPath = resolveImportPath(internalImport, file.file);
+        
+        if (fileMap.has(resolvedPath)) {
+          dependencies.push(resolvedPath);
+        }
+      }
+    }
+
+    // Find dependents (files that import this file)
+    for (const otherFile of files) {
+      if (otherFile.file !== file.file && otherFile.dependencies) {
+        for (const internalImport of otherFile.dependencies.internal_imports) {
+          const resolvedPath = resolveImportPath(
+            internalImport,
+            otherFile.file
+          );
+          if (resolvedPath === file.file) {
+            dependents.push(otherFile.file);
+          }
+        }
+      }
+    }
+
+    nodes.push({
+      file: file.file,
+      dependencies,
+      dependents,
+      exports: file.exported_symbols || [],
+      imports: file.imported_symbols || [],
+      dead_exports: [], // Will be populated by dead code analysis
+    });
+  }
+
+  const nodesWithDeps = nodes.filter(n => n.dependencies.length > 0 || n.dependents.length > 0);
+
+
+  return nodes;
+}
+
+function resolveImportPath(importPath: string, fromFile: string): string {
+  if (importPath.startsWith('.')) {
+    const fromDir = path.dirname(fromFile);
+    let resolved = path.resolve(fromDir, importPath);
+    
+    // Handle TypeScript imports that use .js extensions but point to .ts files
+    if (importPath.endsWith('.js')) {
+      // Replace .js with .ts for TypeScript source files
+      const tsPath = importPath.replace(/\.js$/, '.ts');
+      resolved = path.resolve(fromDir, tsPath);
+    }
+    
+    const relativePath = path.relative(process.cwd(), resolved);
+    
+    // Try different extensions if the exact file doesn't exist
+    const extensions = ['.ts', '.tsx', '.js', '.jsx'];
+    
+    // First try the exact path (for .ts files)
+    if (fs.existsSync(relativePath)) {
+      return relativePath;
+    }
+    
+    // If it's a directory, try index files
+    for (const ext of extensions) {
+      const indexPath = path.join(relativePath, 'index' + ext);
+      if (fs.existsSync(indexPath)) {
+        return indexPath;
+      }
+    }
+    
+    // Try adding extensions (for imports without extensions)
+    if (!path.extname(relativePath)) {
+      for (const ext of extensions) {
+        const withExt = relativePath + ext;
+        if (fs.existsSync(withExt)) {
+          return withExt;
+        }
+      }
+    }
+    
+    return relativePath;
+  }
+  return importPath;
+}function generateMermaidDiagram(nodes: DependencyNode[]): string {
+  let diagram = 'graph TD\n\n';
+
+  // Filter nodes with actual dependencies to avoid empty diagrams
+  const nodesWithDeps = nodes.filter(
+    (node) => node.dependencies.length > 0 || node.dependents.length > 0
+  );
+
+  if (nodesWithDeps.length === 0) {
+    diagram += '  A["No dependencies found"]\n';
+    return diagram;
+  }
+
+  // Add nodes with better naming
+  const addedNodes = new Set<string>();
+  nodesWithDeps.forEach((node) => {
+    const safeName = node.file.replace(/[^a-zA-Z0-9]/g, '_');
+    if (!addedNodes.has(safeName)) {
+      const displayName =
+        node.file.length > 30 ? '...' + node.file.slice(-27) : node.file;
+      diagram += `  ${safeName}["${displayName}"]\n`;
+      addedNodes.add(safeName);
+    }
+  });
+
+  diagram += '\n';
+
+  // Add dependencies
+  nodesWithDeps.forEach((node) => {
+    const safeName = node.file.replace(/[^a-zA-Z0-9]/g, '_');
+    node.dependencies.forEach((dep) => {
+      const depSafeName = dep.replace(/[^a-zA-Z0-9]/g, '_');
+      // Only add if the dependency node exists
+      if (addedNodes.has(depSafeName)) {
+        diagram += `  ${safeName} --> ${depSafeName}\n`;
+      }
+    });
+  });
+
+  return diagram;
+}
+
+function analyzeDeadCode(nodes: DependencyNode[]): DeadCodeAnalysis {
+  const analysis: DeadCodeAnalysis = {
+    unused_functions: [],
+    unused_classes: [],
+    unused_variables: [],
+    unused_files: [],
+    orphaned_exports: [],
+    circular_dependencies: [],
+  };
+
+  // Find unused files (no dependents and not entry points)
+  const unusedFiles = nodes.filter(
+    (node) => node.dependents.length === 0 && !isEntryPoint(node.file)
+  );
+  analysis.unused_files = unusedFiles.map((node) => node.file);
+
+  // Find orphaned exports (exports that are never imported)
+  nodes.forEach((node) => {
+    const allImports = new Set<string>();
+    nodes.forEach((otherNode) => {
+      if (otherNode.file !== node.file) {
+        otherNode.imports.forEach((imp) => allImports.add(imp));
+      }
+    });
+
+    const orphanedExports = node.exports.filter((exp) => !allImports.has(exp));
+    analysis.orphaned_exports.push(
+      ...orphanedExports.map((exp) => `${node.file}:${exp}`)
+    );
+  });
+
+  // Find circular dependencies
+  const visited = new Set<string>();
+  const recursionStack = new Set<string>();
+
+  function detectCycle(node: DependencyNode, path: string[]): void {
+    if (recursionStack.has(node.file)) {
+      const cycleStart = path.indexOf(node.file);
+      if (cycleStart !== -1) {
+        const cycle = path.slice(cycleStart).concat(node.file).join(' -> ');
+        analysis.circular_dependencies.push(cycle);
+      }
+      return;
+    }
+
+    if (visited.has(node.file)) {
+      return;
+    }
+
+    visited.add(node.file);
+    recursionStack.add(node.file);
+
+    node.dependencies.forEach((depFile) => {
+      const depNode = nodes.find((n) => n.file === depFile);
+      if (depNode) {
+        detectCycle(depNode, [...path, node.file]);
+      }
+    });
+
+    recursionStack.delete(node.file);
+  }
+
+  nodes.forEach((node) => {
+    if (!visited.has(node.file)) {
+      detectCycle(node, []);
+    }
+  });
+
+  return analysis;
+}
+
+/**
+ * Analyze dead code from cache data
+ */
+async function analyzeDeadCodeFromCache(): Promise<DeadCodeResult> {
+  const cache = await loadCache();
+  const analysis: DeadCodeAnalysis = {
+    unused_functions: [],
+    unused_classes: [],
+    unused_variables: [],
+    unused_files: [],
+    orphaned_exports: [],
+    circular_dependencies: [],
+  };
+
+  // Collect all exports and imports across files
+  const allExports = new Map<string, { file: string; type: string }>();
+  const allImports = new Set<string>();
+  const fileImports = new Map<string, string[]>();
+  const fileDependencies = new Map<string, string[]>();
+
+  // First pass: collect all exports and imports
+  for (const [filePath, cacheEntry] of Object.entries(cache)) {
+    if (!cacheEntry.analysis?.dependencies) continue;
+
+    const deps = cacheEntry.analysis.dependencies;
+
+    // Collect exports with their source file
+    deps.exported_functions?.forEach((fn) => {
+      allExports.set(fn, { file: filePath, type: 'function' });
+    });
+    deps.exported_classes?.forEach((cls) => {
+      allExports.set(cls, { file: filePath, type: 'class' });
+    });
+    deps.exported_variables?.forEach((v) => {
+      allExports.set(v, { file: filePath, type: 'variable' });
+    });
+
+    // Collect imports
+    const imports = [
+      ...(deps.imported_functions || []),
+      ...(deps.imported_classes || []),
+      ...(deps.imported_variables || []),
+    ];
+    imports.forEach((imp) => allImports.add(imp));
+    fileImports.set(filePath, imports);
+
+    // Collect file dependencies
+    fileDependencies.set(filePath, deps.internal_imports || []);
+  }
+
+  // Find unused exports (orphaned)
+  for (const [exportName, exportInfo] of allExports) {
+    if (!allImports.has(exportName)) {
+      analysis.orphaned_exports.push(
+        `${exportInfo.file}:${exportName} (${exportInfo.type})`
+      );
+    }
+  }
+
+  // Find unused private functions, classes, variables
+  for (const [filePath, cacheEntry] of Object.entries(cache)) {
+    if (!cacheEntry.analysis?.dependencies) continue;
+
+    const deps = cacheEntry.analysis.dependencies;
+
+    // Private functions that are only defined but never called
+    deps.private_functions?.forEach((fn) => {
+      const isUsedInFile =
+        cacheEntry.analysis.content?.includes(`${fn}(`) || false;
+      if (!isUsedInFile) {
+        analysis.unused_functions.push(`${filePath}:${fn}`);
+      }
+    });
+
+    // Private classes that are never instantiated
+    deps.private_classes?.forEach((cls) => {
+      const isUsedInFile =
+        cacheEntry.analysis.content?.includes(`new ${cls}`) ||
+        cacheEntry.analysis.content?.includes(`${cls}.`) ||
+        false;
+      if (!isUsedInFile) {
+        analysis.unused_classes.push(`${filePath}:${cls}`);
+      }
+    });
+
+    // Private variables that are never referenced
+    deps.private_variables?.forEach((v) => {
+      const isUsedInFile = cacheEntry.analysis.content?.includes(v) || false;
+      if (!isUsedInFile) {
+        analysis.unused_variables.push(`${filePath}:${v}`);
+      }
+    });
+  }
+
+  // Find unused files (files with no dependents and not entry points)
+  const allFiles = Object.keys(cache);
+  const referencedFiles = new Set<string>();
+
+  for (const deps of fileDependencies.values()) {
+    deps.forEach((dep) => {
+      // Resolve relative paths to find actual referenced files
+      const resolvedPath = resolveImportPathForDeadCode(dep, allFiles);
+      if (resolvedPath) {
+        referencedFiles.add(resolvedPath);
+      }
+    });
+  }
+
+  // Only consider TypeScript/JavaScript source files as potentially unused
+  // Exclude configuration, documentation, and other essential files
+  for (const filePath of allFiles) {
+    const isSourceFile =
+      filePath.match(/\.(ts|js|tsx|jsx)$/) &&
+      filePath.startsWith('src/') &&
+      !filePath.includes('.d.ts');
+
+    if (
+      isSourceFile &&
+      !referencedFiles.has(filePath) &&
+      !isEntryPoint(filePath)
+    ) {
+      analysis.unused_files.push(filePath);
+    }
+  }
+
+  // Find circular dependencies
+  analysis.circular_dependencies = findCircularDependencies(fileDependencies);
+
+  const summary = {
+    total_unused_functions: analysis.unused_functions.length,
+    total_unused_classes: analysis.unused_classes.length,
+    total_unused_files: analysis.unused_files.length,
+    total_orphaned_exports: analysis.orphaned_exports.length,
+    circular_dependency_count: analysis.circular_dependencies.length,
+  };
+
+  return { analysis, summary };
+}
+
+/**
+ * Resolve import path for dead code analysis
+ */
+function resolveImportPathForDeadCode(
+  importPath: string,
+  allFiles: string[]
+): string | null {
+  if (importPath.startsWith('.')) {
+    // Remove .js extension if present (TypeScript convention)
+    let basePath = importPath;
+    if (basePath.endsWith('.js')) {
+      basePath = basePath.slice(0, -3);
+    }
+
+    // Try to find matching file with common extensions
+    const extensions = ['.ts', '.js', '.tsx', '.jsx'];
+
+    // First try with the base path + extensions
+    for (const ext of extensions) {
+      const candidate = basePath + ext;
+      if (allFiles.includes(candidate)) {
+        return candidate;
+      }
+    }
+
+    // Then try index files
+    const indexExtensions = [
+      '/index.ts',
+      '/index.js',
+      '/index.tsx',
+      '/index.jsx',
+    ];
+    for (const ext of indexExtensions) {
+      const candidate = basePath + ext;
+      if (allFiles.includes(candidate)) {
+        return candidate;
+      }
+    }
+
+    // Finally try the original path as-is
+    if (allFiles.includes(importPath)) {
+      return importPath;
+    }
+  }
+  return null;
+}
+
+/**
+ * Find circular dependencies in file dependency graph
+ */
+function findCircularDependencies(
+  fileDependencies: Map<string, string[]>
+): string[] {
+  const visited = new Set<string>();
+  const recursionStack = new Set<string>();
+  const cycles: string[] = [];
+
+  function dfs(file: string, path: string[]): void {
+    if (recursionStack.has(file)) {
+      const cycleStart = path.indexOf(file);
+      if (cycleStart !== -1) {
+        const cycle = path.slice(cycleStart).concat(file).join(' -> ');
+        cycles.push(cycle);
+      }
+      return;
+    }
+
+    if (visited.has(file)) return;
+
+    visited.add(file);
+    recursionStack.add(file);
+
+    const dependencies = fileDependencies.get(file) || [];
+    for (const dep of dependencies) {
+      const resolvedDep = resolveImportPathForDeadCode(
+        dep,
+        Array.from(fileDependencies.keys())
+      );
+      if (resolvedDep) {
+        dfs(resolvedDep, [...path, file]);
+      }
+    }
+
+    recursionStack.delete(file);
+  }
+
+  for (const file of fileDependencies.keys()) {
+    if (!visited.has(file)) {
+      dfs(file, []);
+    }
+  }
+
+  return cycles;
+}
+
+/**
+ * Generate dependency diagram in specified format
+ */
+function generateDependencyDiagram(
+  nodes: DependencyNode[],
+  format: string
+): string {
+  switch (format) {
+    case 'plantuml':
+      return generatePlantUMLDiagram(nodes);
+    case 'structurizr':
+      return generateStructurizrDiagram(nodes);
+    case 'mermaid':
+    default:
+      return generateMermaidDiagram(nodes);
+  }
+}
+
+/**
+ * Generate PlantUML dependency diagram
+ */
+function generatePlantUMLDiagram(nodes: DependencyNode[]): string {
+  let diagram = '@startuml\n';
+  diagram += '!theme plain\n';
+  diagram += 'title Dependency Diagram\n\n';
+
+  // Add components
+  nodes.forEach((node) => {
+    const componentName = path.basename(node.file, path.extname(node.file));
+    diagram += `component "${componentName}" as ${componentName.replace(/[^a-zA-Z0-9]/g, '_')}\n`;
+  });
+
+  diagram += '\n';
+
+  // Add dependencies
+  nodes.forEach((node) => {
+    const fromName = path
+      .basename(node.file, path.extname(node.file))
+      .replace(/[^a-zA-Z0-9]/g, '_');
+    node.dependencies.forEach((dep) => {
+      const toName = path
+        .basename(dep, path.extname(dep))
+        .replace(/[^a-zA-Z0-9]/g, '_');
+      diagram += `${fromName} --> ${toName}\n`;
+    });
+  });
+
+  diagram += '@enduml\n';
+  return diagram;
+}
+
+/**
+ * Generate Structurizr DSL dependency diagram
+ */
+function generateStructurizrDiagram(nodes: DependencyNode[]): string {
+  let diagram = 'workspace {\n\n';
+  diagram += '    model {\n';
+  diagram += '        softwareSystem = softwareSystem "Application" {\n';
+
+  // Add containers for each file
+  nodes.forEach((node) => {
+    const containerName = path.basename(node.file, path.extname(node.file));
+    const safeName = containerName.replace(/[^a-zA-Z0-9]/g, '_');
+    diagram += `            ${safeName} = container "${containerName}" {\n`;
+    diagram += `                technology "${path.extname(node.file).substring(1)}"\n`;
+    diagram += '            }\n';
+  });
+
+  diagram += '        }\n\n';
+
+  // Add relationships
+  diagram += '        # Relationships\n';
+  nodes.forEach((node) => {
+    const fromName = path
+      .basename(node.file, path.extname(node.file))
+      .replace(/[^a-zA-Z0-9]/g, '_');
+    node.dependencies.forEach((dep) => {
+      const toName = path
+        .basename(dep, path.extname(dep))
+        .replace(/[^a-zA-Z0-9]/g, '_');
+      diagram += `        ${fromName} -> ${toName} "depends on"\n`;
+    });
+  });
+
+  diagram += '    }\n\n';
+  diagram += '    views {\n';
+  diagram += '        container softwareSystem {\n';
+  diagram += '            include *\n';
+  diagram += '            autoLayout\n';
+  diagram += '        }\n';
+  diagram += '    }\n';
+  diagram += '}\n';
+
+  return diagram;
+}
+
+/**
+ * Check if file is an entry point
+ */
+function isEntryPoint(filePath: string): boolean {
+  const fileName = path.basename(filePath);
+  const extension = path.extname(filePath);
+
+  // Entry point files
+  const entryPoints = [
+    'index.js',
+    'index.ts',
+    'main.js',
+    'main.ts',
+    'app.js',
+    'app.ts',
+    'server.js',
+    'server.ts',
+    'index.html',
+    'main.py',
+    '__main__.py',
+  ];
+
+  // Configuration files
+  const configFiles = [
+    'package.json',
+    'package-lock.json',
+    'tsconfig.json',
+    '.eslintrc.js',
+    '.prettierrc',
+    '.gitignore',
+    '.npmignore',
+    '.env.exemple',
+    'config.sample.json',
+  ];
+
+  // Documentation files
+  const docFiles = ['README.md', 'README-PTBR.md', 'LICENSE'];
+
+  // Check patterns
+  const isConfigFile =
+    configFiles.includes(fileName) ||
+    fileName.startsWith('.') ||
+    (extension === '.json' &&
+      (fileName.includes('config') || fileName.includes('package')));
+
+  const isDocFile =
+    docFiles.includes(fileName) ||
+    extension === '.md' ||
+    filePath.includes('docs/') ||
+    filePath.includes('.github/');
+
+  const isPromptFile = filePath.includes('src/prompts/') && extension === '.md';
+
+  const isGitHook = filePath.includes('.git/hooks/');
+
+  const isScriptFile =
+    filePath.includes('scripts/') ||
+    fileName.endsWith('.py') ||
+    fileName.endsWith('.sh');
+
+  const isTestFile =
+    filePath.includes('test/') ||
+    fileName.includes('.test.') ||
+    fileName.includes('.spec.');
+
+  return (
+    entryPoints.includes(fileName) ||
+    filePath.includes('bin/') ||
+    isConfigFile ||
+    isDocFile ||
+    isPromptFile ||
+    isGitHook ||
+    isScriptFile ||
+    isTestFile
+  );
+}
+
+function selectDeadCodePrompt(stackContext: any): string {
+  const primaryLanguage =
+    stackContext?.stackInfo?.primary?.name?.toLowerCase() ||
+    stackContext?.summary?.primary?.toLowerCase();
+
+  const languagePromptMap: Record<string, string> = {
+    typescript: 'analyze/dead-code-typescript',
+    javascript: 'analyze/dead-code-javascript',
+    python: 'analyze/dead-code-python',
+    php: 'analyze/dead-code-php',
+    csharp: 'analyze/dead-code-csharp',
+    'c#': 'analyze/dead-code-csharp',
+    ruby: 'analyze/dead-code-ruby',
+    rust: 'analyze/dead-code-rust',
+    nodejs: 'analyze/dead-code-javascript',
+    node: 'analyze/1.0.0/dead-code-javascript',
+  };
+
+  const selectedPrompt =
+    languagePromptMap[primaryLanguage] || languagePromptMap['typescript'];
+
+  getLogger().info(
+    `Dead code analysis: detected language '${primaryLanguage}', using prompt '${selectedPrompt}'`
+  );
+
+  return selectedPrompt;
+}
+
+async function analyzeDeadCodeWithLLM(): Promise<DeadCodeResult> {
+  const cache = await loadCache();
+  const mcpClient = McpClient.fromConfig();
+  const stackInfo = await mcpClient.detectStack();
+  const stackContext = stackInfo as unknown as Record<string, unknown>;
+  const projectData = extractStructuredDataFromCache(cache);
+  const config = await loadConfig();
+  const promptName = selectDeadCodePrompt(stackContext);
+
+
+
+  try {
+    const promptData: DeadCodePromptContext = {
+      projectName: getProjectName(),
+      projectData: JSON.stringify(projectData, null, 2),
+      stackContext: JSON.stringify(stackContext, null, 2),
+      userLanguage: config.language || 'en-US',
+      timestamp: new Date().toISOString(),
+    };
+
+    const llmAnalysis = await execPrompt<
+      DeadCodePromptContext,
+      DeadCodeResponse
+    >(promptName, promptData, '1.0.0', 'default', 0.3, 3);
+
+    const validatedResponse = assertDeadCodeResponse(llmAnalysis);
+    const result = convertLLMResponseToDeadCodeResult(validatedResponse);
+
+
+
+    return result;
+  } catch (error) {
+    getLogger().error('LLM-based dead code analysis failed:', error);
+    throw error;
+  }
+}
+
+/**
+ * Extract structured data from cache for LLM analysis
+ */
+function extractStructuredDataFromCache(cache: CacheData): any {
+  const project: {
+    files: any[];
+  } = {
+    files: [],
+  };
+
+  for (const [filePath, cacheEntry] of Object.entries(cache)) {
+    if (!cacheEntry.analysis?.dependencies) continue;
+
+    const deps = cacheEntry.analysis.dependencies;
+    const fileData = {
+      path: filePath,
+      size: cacheEntry.analysis.size,
+      language: cacheEntry.analysis.language,
+      exports: {
+        functions: deps.exported_functions || [],
+        classes: deps.exported_classes || [],
+        variables: deps.exported_variables || [],
+      },
+      imports: {
+        internal: deps.internal_imports || [],
+        external: deps.external_imports || [],
+        functions: deps.imported_functions || [],
+        classes: deps.imported_classes || [],
+        variables: deps.imported_variables || [],
+      },
+      private: {
+        functions: deps.private_functions || [],
+        classes: deps.private_classes || [],
+        variables: deps.private_variables || [],
+      },
+    };
+
+    project.files.push(fileData);
+  }
+
+  return project;
+}
+
+function convertLLMResponseToDeadCodeResult(
+  llmAnalysis: DeadCodeResponse
+): DeadCodeResult {
+  const analysis: DeadCodeAnalysis = {
+    unused_functions: [],
+    unused_classes: [],
+    unused_variables: [],
+    unused_files: llmAnalysis.deadCode?.unusedFiles?.map((f) => f.path) || [],
+    orphaned_exports:
+      llmAnalysis.deadCode?.unusedExports?.map(
+        (e) => `${e.file}:${e.export} (${e.type})`
+      ) || [],
+    circular_dependencies: [], // LLM circular dependencies removed from fullAnalysis to avoid duplication
+  };
+
+  // Extract functions, classes, variables from unused exports
+  llmAnalysis.deadCode?.unusedExports?.forEach((exportItem) => {
+    const identifier = `${exportItem.file}:${exportItem.export}`;
+    switch (exportItem.type) {
+      case 'function':
+        analysis.unused_functions.push(identifier);
+        break;
+      case 'class':
+        analysis.unused_classes.push(identifier);
+        break;
+      case 'variable':
+        analysis.unused_variables.push(identifier);
+        break;
+    }
+  });
+
+  const summary = {
+    total_unused_functions: analysis.unused_functions.length,
+    total_unused_classes: analysis.unused_classes.length,
+    total_unused_files: analysis.unused_files.length,
+    total_orphaned_exports: analysis.orphaned_exports.length,
+    circular_dependency_count: analysis.circular_dependencies.length,
+  };
+
+  return { analysis, summary };
+}
+
+/**
+ * Build enhanced dependency graph using LLM analysis data
+ */
+async function buildEnhancedDependencyGraph(
+  filesToProcess: FileAnalysisData[],
+  deadCodeResult: DeadCodeResult
+): Promise<DependencyNode[]> {
+  const cache = await loadCache();
+  const nodes: DependencyNode[] = [];
+  const usedFiles = new Set(
+    filesToProcess
+      .filter(
+        (file) => !deadCodeResult.analysis.unused_files.includes(file.file)
+      )
+      .map((f) => f.file)
+  );
+
+  for (const filePath of usedFiles) {
+    const cacheEntry = cache[filePath];
+    if (!cacheEntry?.analysis?.dependencies) continue;
+
+    const deps = cacheEntry.analysis.dependencies;
+    const resolvedDependencies: string[] = [];
+
+    // Only include dependencies to files that are not marked as unused
+    for (const dep of deps.internal_imports || []) {
+      const resolved = resolveImportPathForDeadCode(dep, Array.from(usedFiles));
+      if (resolved && usedFiles.has(resolved)) {
+        resolvedDependencies.push(resolved);
+      }
+    }
+
+    // Mark node as unused if it contains only dead exports
+    const hasLiveExports = !deadCodeResult.analysis.orphaned_exports.some(
+      (export_) => export_.startsWith(filePath + ':')
+    );
+
+    nodes.push({
+      file: filePath,
+      dependencies: resolvedDependencies,
+      dependents: [], // Will be populated later if needed
+      exports: deps.exported_functions || [],
+      imports: deps.internal_imports || [],
+      dead_exports: deadCodeResult.analysis.orphaned_exports
+        .filter((export_) => export_.startsWith(filePath + ':'))
+        .map((export_) => export_.split(':')[1]),
+    });
+  }
+
+  return nodes;
 }

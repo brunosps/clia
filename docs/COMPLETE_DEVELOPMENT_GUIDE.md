@@ -33,7 +33,7 @@ Cada comando possui prompts especializados para diferentes contextos e modos de 
 ## Comandos Disponíveis - Documentação Oficial
 
 ### comando `analyze`
-**Descrição**: � Análise abrangente de qualidade de código e segurança com processamento batch dinâmico
+**Descrição**: 📊 Análise abrangente de qualidade de código e segurança com processamento batch dinâmico
 **Uso**: `clia analyze [caminhos...]`
 **Alias**: `analyse`
 **Argumentos**:
@@ -43,8 +43,70 @@ Cada comando possui prompts especializados para diferentes contextos e modos de 
 - `-o, --output <caminho>`: Diretório de saída para relatórios
 - `--include-tests`: Incluir arquivos de teste na análise
 - `--format <formato>`: Formato de saída: json, markdown, both (padrão: both)
+- `--dependency-graph [tipo]`: Gerar diagrama de dependências (mermaid|plantuml|structurizr) (padrão: mermaid)
+- `--dead-code`: Detectar código não utilizado e exports órfãos
+- `--output-language <idioma>`: Idioma dos relatórios
 
-**Funcionalidade**: Realiza análise completa de qualidade de código, incluindo análise de segurança, princípios SOLID, clean code e métricas de complexidade. Gera relatórios detalhados em formato JSON e/ou Markdown.
+**Funcionalidade**: Realiza análise completa de qualidade de código, incluindo:
+
+#### Análise Principal
+- **Análise de segurança**: Vulnerabilidades OWASP Top 10, CWE patterns
+- **Princípios SOLID**: Violações e oportunidades de refatoração
+- **Clean Code**: Complexidade, nomenclatura, organização
+- **Performance**: Gargalos e oportunidades de otimização
+- **Métricas**: Pontuação geral, contagem de issues, índices de qualidade
+
+#### Análise de Dead Code (--dead-code)
+Quando ativada, analisa o cache `.clia/analyze-cache.json` para identificar:
+- **Funções não utilizadas**: Funções privadas que nunca são chamadas
+- **Classes não utilizadas**: Classes privadas que nunca são instanciadas
+- **Variáveis não utilizadas**: Variáveis privadas que nunca são referenciadas  
+- **Arquivos órfãos**: Arquivos sem dependentes e que não são entry points
+- **Exports órfãos**: Exports que nunca são importados por outros arquivos
+- **Dependências circulares**: Ciclos no grafo de dependências entre arquivos
+
+#### Diagramas de Dependência (--dependency-graph)
+Gera visualizações do grafo de dependências em três formatos:
+
+**Mermaid** (padrão):
+```mermaid
+graph TD
+  ComponentA --> ComponentB
+  ComponentB --> ComponentC
+```
+
+**PlantUML**:
+```plantuml
+@startuml
+component "ComponentA" as CompA
+component "ComponentB" as CompB
+CompA --> CompB
+@enduml
+```
+
+**Structurizr DSL**:
+```structurizr
+workspace {
+    model {
+        softwareSystem = softwareSystem "Application" {
+            compA = container "ComponentA"
+            compB = container "ComponentB"
+        }
+        compA -> compB "depends on"
+    }
+    views {
+        container softwareSystem {
+            include *
+            autoLayout
+        }
+    }
+}
+```
+
+#### Saídas Geradas
+- **JSON**: `.clia/reports/{timestamp}_analyze.json` - Dados estruturados completos
+- **Markdown**: `.clia/reports/{timestamp}_analyze.md` - Relatório legível
+- **Diagrama**: `.clia/reports/{timestamp}_dependencies.{mmd|puml|dsl}` - Arquivo do diagrama
 
 ### comando `ask`
 **Descrição**: 🤖 Sistema inteligente de perguntas com análise contextual do projeto
