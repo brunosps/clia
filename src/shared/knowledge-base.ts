@@ -86,19 +86,11 @@ export class KnowledgeBase {
   private needsUpdate(filePath: string): boolean {
     const currentHash = this.calculateFileHash(filePath);
     const existingAnalysis = this.data.sources[filePath];
-
-    if (!existingAnalysis) {
-      logger.debug(`📄 New file detected: ${filePath}`);
-      return true;
-    }
-
-    if (existingAnalysis.hash !== currentHash) {
-      logger.debug(`🔄 File modified: ${filePath}`);
-      return true;
-    }
-
-    logger.debug(`✅ File up-to-date: ${filePath}`);
-    return false;
+    const needsUpdate =
+      !existingAnalysis ||
+      existingAnalysis.hash !== currentHash ||
+      !existingAnalysis['content'];
+    return needsUpdate;
   }
 
   /**
@@ -106,8 +98,11 @@ export class KnowledgeBase {
    * Se o arquivo foi modificado ou não existe, realiza nova análise
    */
   async getSourceAnalysis(
-    filePath: string, 
-    analysisFunction?: (question: string, options: any) => Promise<{ answer: string }>
+    filePath: string,
+    analysisFunction?: (
+      question: string,
+      options: any
+    ) => Promise<{ answer: string }>
   ): Promise<string> {
     const normalizedPath = filePath.startsWith(this.baseDir)
       ? path.relative(this.baseDir, filePath)
@@ -121,10 +116,14 @@ export class KnowledgeBase {
     // Se não há função de análise, retorna análise existente ou erro
     if (!analysisFunction) {
       if (this.data.sources[normalizedPath]) {
-        logger.warn(`⚠️ No analysis function provided, using stale analysis for: ${normalizedPath}`);
+        logger.warn(
+          `⚠️ No analysis function provided, using stale analysis for: ${normalizedPath}`
+        );
         return this.data.sources[normalizedPath].content;
       } else {
-        logger.error(`❌ No analysis function provided and no cached analysis for: ${normalizedPath}`);
+        logger.error(
+          `❌ No analysis function provided and no cached analysis for: ${normalizedPath}`
+        );
         return `Error: No analysis available for ${normalizedPath}`;
       }
     }
@@ -175,7 +174,10 @@ export class KnowledgeBase {
    * Utiliza o mesmo padrão do RAG index para descobrir arquivos
    */
   async updateFromProjectInspection(
-    analysisFunction?: (question: string, options: any) => Promise<{ answer: string }>
+    analysisFunction?: (
+      question: string,
+      options: any
+    ) => Promise<{ answer: string }>
   ): Promise<{ updated: number; total: number; errors: string[] }> {
     const projectInspectionPath = path.join(
       this.baseDir,
@@ -430,7 +432,10 @@ export function getKnowledgeBase(
  */
 export async function getSourceAnalysis(
   filePath: string,
-  analysisFunction?: (question: string, options: any) => Promise<{ answer: string }>,
+  analysisFunction?: (
+    question: string,
+    options: any
+  ) => Promise<{ answer: string }>,
   baseDir: string = process.cwd()
 ): Promise<string> {
   const knowledgeBase = getKnowledgeBase(baseDir);
