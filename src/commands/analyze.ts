@@ -2337,20 +2337,42 @@ function extractJavaScriptDependencies(
     }
   }
 
-  // Export statements
-  const exportRegex =
-    /export\s+(?:default\s+)?(?:(function|class|const|let|var)\s+(\w+)|(\w+))/g;
-  while ((match = exportRegex.exec(content)) !== null) {
-    const type = match[1];
-    const name = match[2] || match[3];
+  // Export statements - improved regex to handle different export patterns
+  const exportFunctionRegex = /export\s+(?:default\s+)?(?:async\s+)?function\s+(\w+)/g;
+  while ((match = exportFunctionRegex.exec(content)) !== null) {
+    dependencies.exported_functions.push(match[1]);
+  }
 
-    if (type === 'function') {
-      dependencies.exported_functions.push(name);
-    } else if (type === 'class') {
-      dependencies.exported_classes.push(name);
-    } else {
-      dependencies.exported_variables.push(name);
-    }
+  const exportClassRegex = /export\s+(?:default\s+)?class\s+(\w+)/g;
+  while ((match = exportClassRegex.exec(content)) !== null) {
+    dependencies.exported_classes.push(match[1]);
+  }
+
+  const exportVariableRegex = /export\s+(?:default\s+)?(const|let|var)\s+(\w+)/g;
+  while ((match = exportVariableRegex.exec(content)) !== null) {
+    dependencies.exported_variables.push(match[2]);
+  }
+
+  // TypeScript interface and type exports
+  const exportInterfaceRegex = /export\s+(?:default\s+)?interface\s+(\w+)/g;
+  while ((match = exportInterfaceRegex.exec(content)) !== null) {
+    dependencies.exported_classes.push(match[1]); // Treat interfaces as classes for categorization
+  }
+
+  const exportTypeRegex = /export\s+(?:default\s+)?type\s+(\w+)/g;
+  while ((match = exportTypeRegex.exec(content)) !== null) {
+    dependencies.exported_variables.push(match[1]); // Treat type aliases as variables
+  }
+
+  // Named exports (export { name1, name2 })
+  const namedExportRegex = /export\s*\{([^}]+)\}/g;
+  while ((match = namedExportRegex.exec(content)) !== null) {
+    const names = match[1].split(',').map(name => name.trim().replace(/\s+as\s+\w+$/, ''));
+    names.forEach(name => {
+      if (name && !name.includes(' ')) {
+        dependencies.exported_variables.push(name);
+      }
+    });
   }
 
   // Private functions (not exported) - including function declarations, expressions, and arrow functions
@@ -2403,6 +2425,23 @@ function extractJavaScriptDependencies(
   const privateVarRegex = /(?<!export\s+)(const|let|var)\s+(\w+)\s*=/g;
   while ((match = privateVarRegex.exec(content)) !== null) {
     const name = match[2];
+    if (!dependencies.exported_variables.includes(name)) {
+      dependencies.private_variables.push(name);
+    }
+  }
+
+  // TypeScript private interfaces and types
+  const privateInterfaceRegex = /(?<!export\s+)interface\s+(\w+)/g;
+  while ((match = privateInterfaceRegex.exec(content)) !== null) {
+    const name = match[1];
+    if (!dependencies.exported_classes.includes(name)) {
+      dependencies.private_classes.push(name);
+    }
+  }
+
+  const privateTypeRegex = /(?<!export\s+)type\s+(\w+)\s*=/g;
+  while ((match = privateTypeRegex.exec(content)) !== null) {
+    const name = match[1];
     if (!dependencies.exported_variables.includes(name)) {
       dependencies.private_variables.push(name);
     }
