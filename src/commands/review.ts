@@ -163,7 +163,7 @@ Note: Without parameters, only staged files will be reviewed. Use --commit, --ta
     .option('--branch <BRANCH>', 'Branch to compare against (default: main)')
     .option('-o, --output <FILE>', 'Output file path')
     .option(
-      '--outputLanguage <OUTPUT_LANGUAGE>',
+      '--output-language <OUTPUT_LANGUAGE>',
       'Translate to pt-Br or other language'
     )
     .action(async (options) => {
