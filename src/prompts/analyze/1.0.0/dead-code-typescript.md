@@ -28,6 +28,7 @@
     <role id="TypeScriptSpecialist" expertise="typescript-analysis">Handle TypeScript-specific patterns like type imports, .js/.ts resolution, and re-exports.</role>
     <role id="FrameworkAnalyst" expertise="framework-conventions">Apply framework-specific rules for entry points, convention-based usage, and implicit dependencies.</role>
     <role id="QualityAssurance" expertise="validation">Validate findings against false positives, ensure confidence scores reflect evidence quality.</role>
+    <role id="OrphanFileDetective" expertise="orphan-file-detection">CRITICAL ROLE: Identify files that export functionality but are never imported by any other file in the project. Files like command-mapper.ts that export functions but have no incoming imports should be flagged as unused files.</role>
     <role id="Synthesizer" expertise="output-compilation">Merge all findings, translate to {{userLanguage}}, and emit structured JSON output.</role>
   </personas>
 
@@ -40,12 +41,13 @@
     <step id="6" role="FrameworkAnalyst">Apply framework conventions (React hooks, Next.js pages, Node.js modules) to avoid false positives.</step>
     <step id="7" role="QualityAssurance">Validate findings, assign confidence scores, and filter out likely false positives based on patterns.</step>
     <step id="8" role="Synthesizer">Compile final analysis, translate descriptions to {{userLanguage}}, and output JSON matching schema.</step>
+    <step id="9" role="OrphanFileDetective">CRITICAL STEP: Identify files that export functions/classes but are never imported by any other project file - these are potentially unused files that should be flagged.</step>
   </workflow>
 
   <analysis_guidelines>
     <dead_code_detection>
-      <unused_files>Files with no imports from other project files and not identified as entry points</unused_files>
-      <unused_exports>Exported functions, classes, variables, types never imported by any project file</unused_exports>
+      <unused_files>Files with no imports from other project files and not identified as entry points. Consider both static imports (import/require) and dynamic imports (import(), require() calls, string-based module loading)</unused_files>
+      <unused_exports>Exported functions, classes, variables, types never imported by any project file - check for both static and dynamic import patterns</unused_exports>
       <unused_privates>Private functions, classes, variables defined but never referenced within their file</unused_privates>
       <orphaned_types>TypeScript interfaces, types exported but never used in type annotations or imports</orphaned_types>
     </dead_code_detection>
@@ -59,14 +61,21 @@
     <special_patterns>
       <typescript>Handle 'import type' statements, .js extensions resolving to .ts files</typescript>
       <reexports>Track re-exports that may appear unused but serve as API boundaries</reexports>
-      <dynamic_imports>Consider dynamic import() statements and require() calls</dynamic_imports>
+      <dynamic_imports>Detect and consider dynamic import() statements, require() calls, and string-based module references like loadModule('module-name')</dynamic_imports>
       <side_effects>Account for side-effect only imports like polyfills or global configurations</side_effects>
     </special_patterns>
     
+    <unused_file_criteria>
+      <primary>File has exported functions/classes/variables but NO other project files import from it</primary>
+      <secondary>File is not an entry point (main, index, CLI, test, config)</secondary>
+      <tertiary>File is not referenced via dynamic imports or string-based module loading</tertiary>
+      <exclusions>Do not flag files that are: configuration files, test files, build scripts, documentation, or have side-effects imports</exclusions>
+    </unused_file_criteria>
+    
     <confidence_scoring>
-      <high>0.8-1.0: Clear static analysis evidence, no framework exceptions</high>
-      <medium>0.5-0.7: Strong evidence but potential framework or dynamic usage</medium>
-      <low>0.1-0.4: Heuristic-based detection, requires manual validation</low>
+      <high>0.8-1.0: Clear static analysis evidence, no framework exceptions, no dynamic import patterns found</high>
+      <medium>0.5-0.7: Strong evidence but potential framework or dynamic usage, some string references that could be module names</medium>
+      <low>0.1-0.4: Heuristic-based detection, requires manual validation, unclear dynamic usage patterns</low>
     </confidence_scoring>
   </analysis_guidelines>
 
@@ -77,6 +86,11 @@
     <instruction>Map dependency relationships accurately, including transitive dependencies</instruction>
     <instruction>Assign confidence scores based on static analysis evidence quality</instruction>
     <instruction>Handle TypeScript type system correctly, distinguishing type-only from value imports</instruction>
+    <instruction>CRITICAL: For unused files, check that the file exports functionality but NO OTHER files import from it - files like command-mapper.ts that export functions but are never imported should be flagged as unused with high confidence</instruction>
+    <instruction>When analyzing dynamic imports, look for patterns like: import('module'), require('module'), loadModule('name'), or any string that matches a file path in the project</instruction>
+    <instruction>Files that only have dependencies but export nothing and are not imported should be flagged as potential unused files if they are not entry points</instruction>
+    <instruction>STEP-BY-STEP ORPHAN FILE DETECTION: For each file in projectData, check: 1) Does it export any functions/classes/variables? 2) Is it imported by ANY other file? 3) Is it an entry point? If YES to #1, NO to #2, NO to #3 → FLAG AS UNUSED FILE</instruction>
+    <instruction>EXAMPLE: If command-mapper.ts exports ['mapPromptToCommand', 'listMappedCommands', 'searchCommands', 'extractCommandParameters'] but no file imports from 'command-mapper' or './command-mapper', it should be flagged as unused with high confidence</instruction>
   </instructions>
 
   <output_schema>

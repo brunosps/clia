@@ -7,7 +7,7 @@ import { getLogger } from '../shared/logger.js';
 import { execPrompt } from '../shared/utils.js';
 import { discoverFiles, mergeExcludes } from '../rag/indexer.js';
 import { detectLanguage } from '../rag/chunker.js';
-import { getStackContext } from '../shared/stack-context.js';
+import { getStackContext, StackContext } from '../shared/stack-context.js';
 import { retrieveForFiles } from '../rag/index.js';
 import { generateTimestamp } from '../shared/timestamp.js';
 import {
@@ -15,6 +15,12 @@ import {
   analyzeProjectIntegrations,
 } from '../shared/external-integrations-detector.js';
 import { McpClient } from '../mcp/client.js';
+import type {
+  SemgrepReport,
+  TrivyReport,
+  SemgrepFinding,
+  TrivyVulnerability,
+} from '../mcp/client.js';
 import { getSourceAnalysis } from '../shared/knowledge-base.js';
 import { processAskQuery } from './ask.js';
 import {
@@ -58,6 +64,11 @@ interface ProjectInspection {
     configFile: string;
     dependenciesCount?: number;
   }>;
+  projectStructure?: {
+    entryPoints: string[];
+    modules: string[];
+    directories: string[];
+  };
   ragOptimization: {
     directoryStructure: {
       includePaths: string[];
@@ -91,7 +102,7 @@ export function registerAnalyzeCommand(program: Command): void {
   program
     .command('analyze [paths...]')
     .alias('analyse')
-    .description('Analyzes code quality, security, dependencies and dead code')
+    .description('Comprehensive code quality and security analysis v1.0.0 with dead code detection and dependency mapping')
     .option('-o, --output <path>', 'Output directory for reports')
     .option('--include-tests', 'Include test files in analysis')
     .option('--format <format>', 'Output format: json, markdown, both', 'both')
@@ -121,18 +132,15 @@ export function registerAnalyzeCommand(program: Command): void {
 
 async function updateCacheWithFileAnalysis(
   filePath: string,
-  llmAnalysis: any,
-  config: any
+  llmAnalysis: FullFileAnalysis,
+  config: Config
 ): Promise<void> {
-  // Only update cache if we have a valid LLM analysis result
   if (!llmAnalysis || !llmAnalysis.file) {
     return;
   }
 
   const cache = await loadCache();
   
-  // We need to create the complete cache entry since we removed it from discoverAndPrepareFiles
-  // Get file info for basic analysis data
   try {
     const content = await fs.promises.readFile(filePath, 'utf-8');
     const language = detectLanguage(filePath);
@@ -143,11 +151,10 @@ async function updateCacheWithFileAnalysis(
     const complexityTier = determineComplexityTier(complexityEstimate, stats.size);
     const dependencies = extractDependencies(content, language, filePath);
     
-    // Optimized cache structure - store only essential metadata, not full content
     const fileAnalysis: FileAnalysisData = {
       file: filePath,
       language,
-      content: '', // Don't store content in cache - we have contentHash for validation
+      content: '',
       size: stats.size,
       complexity_estimate: complexityEstimate,
       complexity_tier: complexityTier,
@@ -162,13 +169,11 @@ async function updateCacheWithFileAnalysis(
       ),
     };
 
-    // Remove dependencies from fullAnalysis to avoid duplication
     const optimizedLLMAnalysis = { ...llmAnalysis };
     if (optimizedLLMAnalysis.dependencies) {
       delete optimizedLLMAnalysis.dependencies;
     }
 
-    // Create or update cache entry with optimized structure
     cache[filePath] = {
       contentHash,
       timestamp: new Date().toISOString(),
@@ -178,16 +183,16 @@ async function updateCacheWithFileAnalysis(
     
     await saveCache(cache);
   } catch (error) {
-    console.warn(`Failed to update cache for ${filePath}:`, error);
+    throw new Error(`Failed to update cache for ${filePath}: ${error}`);
   }
 }
 
 async function createAnalysisResult(
-  allAnalyses: any[],
+  allAnalyses: FullFileAnalysis[],
   totalFiles: number,
   options: AnalyzeOptions,
   filesToProcess: FileAnalysisData[],
-  cachedAnalyses: { analysis: FileAnalysisData; fullAnalysis: any }[]
+  cachedAnalyses: CachedAnalysisEntry[]
 ): Promise<AnalysisResult> {
   const timestamp = new Date().toISOString();
 
@@ -217,7 +222,6 @@ async function createAnalysisResult(
     },
   };
 
-  // Add dead code analysis if requested
   if (options.deadCode) {
     getLogger().info('Starting dead code analysis with LLM...');
     try {
@@ -225,7 +229,6 @@ async function createAnalysisResult(
       getLogger().info('Dead code analysis completed successfully');
     } catch (error) {
       getLogger().warn('Failed to analyze dead code with LLM:', error);
-      // Fallback to regex-based analysis
       try {
         getLogger().info('Falling back to regex-based dead code analysis...');
         result.dead_code = await analyzeDeadCodeFromCache();
@@ -236,33 +239,39 @@ async function createAnalysisResult(
     }
   }
 
-  // Add dependency graph if requested
   if (options.dependencyGraph) {
     try {
-      // Combine all file data for dependency graph
+      const logger = getLogger();
+      logger.info('Generating dependency graph...');
+      
       const allFileData = [
         ...filesToProcess,
         ...cachedAnalyses.map(c => c.analysis)
       ];
       
-
+      logger.info(`Total files for dependency graph: ${allFileData.length}`);
       
       let dependencyNodes: DependencyNode[];
 
       if (options.deadCode && result.dead_code) {
-        // Use enhanced dependency graph with LLM analysis data
+        logger.info('Using enhanced dependency graph with dead code analysis');
         dependencyNodes = await buildEnhancedDependencyGraph(
           allFileData,
           result.dead_code
         );
       } else {
+        logger.info('Building standard dependency graph');
         dependencyNodes = await buildDependencyGraph(allFileData);
       }
+
+      logger.info(`Generated ${dependencyNodes.length} dependency nodes`);
 
       const format =
         typeof options.dependencyGraph === 'string'
           ? options.dependencyGraph
           : 'mermaid';
+      
+      logger.info(`Generating ${format} diagram`);
       const diagram = generateDependencyDiagram(dependencyNodes, format);
 
       result.dependency_graph = {
@@ -270,19 +279,22 @@ async function createAnalysisResult(
         diagram,
         nodes: dependencyNodes,
       };
+      
+      logger.info('Dependency graph generated successfully');
     } catch (error) {
-      getLogger().warn('Failed to generate dependency graph:', error);
+      getLogger().error('Failed to generate dependency graph:', error);
+      throw error;
     }
   }
 
   return result;
 }
 
-function extractCriticalIssues(analyses: any[]): string[] {
+function extractCriticalIssues(analyses: FullFileAnalysis[]): string[] {
   const issues: string[] = [];
   for (const analysis of analyses) {
-    if (analysis.analysis?.security?.issues) {
-      for (const issue of analysis.analysis.security.issues) {
+    if (analysis.security_analysis?.vulnerabilities) {
+      for (const issue of analysis.security_analysis.vulnerabilities) {
         if (issue.severity === 'high' || issue.severity === 'critical') {
           issues.push(`${analysis.file}: ${issue.description}`);
         }
@@ -299,7 +311,7 @@ function extractCriticalIssues(analyses: any[]): string[] {
   return issues;
 }
 
-function extractHighPriorityIssues(analyses: any[]): string[] {
+function extractHighPriorityIssues(analyses: FullFileAnalysis[]): string[] {
   const issues: string[] = [];
   for (const analysis of analyses) {
     if (analysis.priority_actions) {
@@ -313,7 +325,7 @@ function extractHighPriorityIssues(analyses: any[]): string[] {
   return issues;
 }
 
-function extractImprovementOpportunities(analyses: any[]): string[] {
+function extractImprovementOpportunities(analyses: FullFileAnalysis[]): string[] {
   const opportunities: string[] = [];
   for (const analysis of analyses) {
     if (analysis.priority_actions) {
@@ -327,7 +339,7 @@ function extractImprovementOpportunities(analyses: any[]): string[] {
   return opportunities;
 }
 
-function calculateOverallScore(analyses: any[]): number {
+function calculateOverallScore(analyses: FullFileAnalysis[]): number {
   if (analyses.length === 0) return 0;
   const sum = analyses.reduce(
     (acc, analysis) => acc + (analysis.overall_score || 0),
@@ -336,38 +348,46 @@ function calculateOverallScore(analyses: any[]): number {
   return Math.round(sum / analyses.length);
 }
 
-function countTotalIssues(analyses: any[]): number {
+function countTotalIssues(analyses: FullFileAnalysis[]): number {
   let count = 0;
   for (const analysis of analyses) {
-    if (analysis.analysis?.security?.issues) {
-      count += analysis.analysis.security.issues.length;
+    if (analysis.security_analysis?.vulnerabilities) {
+      count += analysis.security_analysis.vulnerabilities.length;
     }
-    if (analysis.analysis?.clean_code?.issues) {
-      count += analysis.analysis.clean_code.issues.length;
+    if (analysis.clean_code_analysis?.naming_issues) {
+      count += analysis.clean_code_analysis.naming_issues.length;
     }
-    if (analysis.analysis?.solid_principles?.violations) {
-      count += analysis.analysis.solid_principles.violations.length;
+    if (analysis.clean_code_analysis?.complexity_concerns) {
+      count += analysis.clean_code_analysis.complexity_concerns.length;
     }
-    if (analysis.analysis?.performance?.bottlenecks) {
-      count += analysis.analysis.performance.bottlenecks.length;
+    if (analysis.clean_code_analysis?.organization_issues) {
+      count += analysis.clean_code_analysis.organization_issues.length;
+    }
+    if (analysis.solid_analysis?.violations) {
+      count += analysis.solid_analysis.violations.length;
+    }
+    if (analysis.performance_analysis?.performance_issues) {
+      count += analysis.performance_analysis.performance_issues.length;
     }
   }
   return count;
 }
 
-function countFilesWithIssues(analyses: any[]): number {
+function countFilesWithIssues(analyses: FullFileAnalysis[]): number {
   return analyses.filter((analysis) => {
     return (
-      (analysis.analysis?.security?.issues?.length || 0) > 0 ||
-      (analysis.analysis?.clean_code?.issues?.length || 0) > 0 ||
-      (analysis.analysis?.solid_principles?.violations?.length || 0) > 0 ||
-      (analysis.analysis?.performance?.bottlenecks?.length || 0) > 0 ||
+      (analysis.security_analysis?.vulnerabilities?.length || 0) > 0 ||
+      (analysis.clean_code_analysis?.naming_issues?.length || 0) > 0 ||
+      (analysis.clean_code_analysis?.complexity_concerns?.length || 0) > 0 ||
+      (analysis.clean_code_analysis?.organization_issues?.length || 0) > 0 ||
+      (analysis.solid_analysis?.violations?.length || 0) > 0 ||
+      (analysis.performance_analysis?.performance_issues?.length || 0) > 0 ||
       (analysis.overall_score || 0) < 7
     );
   }).length;
 }
 
-function extractImmediateActions(analyses: any[]): string[] {
+function extractImmediateActions(analyses: FullFileAnalysis[]): string[] {
   const actions: string[] = [];
   for (const analysis of analyses) {
     if (analysis.priority_actions) {
@@ -381,7 +401,7 @@ function extractImmediateActions(analyses: any[]): string[] {
   return actions;
 }
 
-function extractShortTermImprovements(analyses: any[]): string[] {
+function extractShortTermImprovements(analyses: FullFileAnalysis[]): string[] {
   const improvements: string[] = [];
   for (const analysis of analyses) {
     if (analysis.priority_actions) {
@@ -395,7 +415,7 @@ function extractShortTermImprovements(analyses: any[]): string[] {
   return improvements;
 }
 
-function extractLongTermStrategic(analyses: any[]): string[] {
+function extractLongTermStrategic(analyses: FullFileAnalysis[]): string[] {
   const strategic: string[] = [];
   for (const analysis of analyses) {
     if (analysis.priority_actions) {
@@ -445,13 +465,11 @@ interface DependencyNode {
   dead_exports: string[];
 }
 
-interface DeadCodeAnalysis {
-  unused_functions: string[];
-  unused_classes: string[];
-  unused_variables: string[];
-  unused_files: string[];
-  orphaned_exports: string[];
-  circular_dependencies: string[];
+interface DeadCodeItem {
+  name?: string;
+  line?: number;
+  reason?: string;
+  [key: string]: unknown;
 }
 
 interface DeadCodeAnalysis {
@@ -461,6 +479,11 @@ interface DeadCodeAnalysis {
   unused_files: string[];
   orphaned_exports: string[];
   circular_dependencies: string[];
+  unused_private_functions?: Array<string | DeadCodeItem>;
+  unused_private_classes?: Array<string | DeadCodeItem>;
+  unused_private_variables?: Array<string | DeadCodeItem>;
+  unreachable_code?: Array<string | DeadCodeItem>;
+  [key: string]: unknown;
 }
 
 interface DeadCodeResult {
@@ -478,24 +501,211 @@ interface CacheEntry {
   contentHash: string;
   timestamp: string;
   analysis: FileAnalysisData;
-  fullAnalysis?: {
-    file: string;
-    language: string;
-    purpose?: string;
-    security_analysis?: any;
-    clean_code_analysis?: any;
-    solid_analysis?: any;
-    maintainability_analysis?: any;
-    performance_analysis?: any;
-    integration_analysis?: any;
-    overall_assessment?: any;
-    recommendations?: any;
+  fullAnalysis?: FullFileAnalysis;
+}
+
+interface FullFileAnalysis {
+  file: string;
+  language: string;
+  purpose?: string;
+  overall_score?: number;
+  priority_actions?: Array<{
+    priority: string;
+    action: string;
+  }>;
+  security_analysis?: SecurityAnalysis;
+  clean_code_analysis?: CleanCodeAnalysis;
+  solid_analysis?: SolidAnalysis;
+  maintainability_analysis?: MaintainabilityAnalysis;
+  performance_analysis?: PerformanceAnalysis;
+  integration_analysis?: IntegrationAnalysis;
+  overall_assessment?: OverallAssessment;
+  recommendations?: FileRecommendations;
+  dependencies?: DependencyInfo;
+  [key: string]: unknown;
+}
+
+interface SecurityAnalysis {
+  score: number;
+  vulnerabilities: Array<{
+    type: string;
+    severity: string;
+    description: string;
+    line?: number;
+    recommendation: string;
+    message?: string;
+    location?: string;
+    fix?: string;
+    [key: string]: unknown;
+  }>;
+  exposed_secrets: Array<{
+    type: string;
+    location: string;
+    severity: string;
+    description?: string;
+    [key: string]: unknown;
+  }>;
+  security_concerns: string[];
+}
+
+interface CleanCodeAnalysis {
+  score: number;
+  naming_issues: Array<{
+    type: string;
+    location: string;
+    suggestion: string;
+    description?: string;
+    message?: string;
+    [key: string]: unknown;
+  }>;
+  complexity_concerns: Array<{
+    function: string;
+    complexity: number;
+    recommendation: string;
+    description?: string;
+    message?: string;
+    suggestion?: string;
+    complexity_score?: number;
+    [key: string]: unknown;
+  }>;
+  organization_issues: Array<{
+    issue: string;
+    suggestion: string;
+    description?: string;
+    message?: string;
+    [key: string]: unknown;
+  }>;
+}
+
+interface SolidAnalysis {
+  score: number;
+  violations: Array<{
+    principle: string;
+    description: string;
+    location: string;
+    impact: string;
+    message?: string;
+    suggestion?: string;
+    [key: string]: unknown;
+  }>;
+  architectural_concerns: string[];
+  dependency_issues: string[];
+}
+
+interface MaintainabilityAnalysis {
+  score: number;
+  code_duplication: Array<{
+    location: string;
+    severity: string;
+  }>;
+  technical_debt: Array<{
+    area: string;
+    severity: string;
+    estimation: string;
+  }>;
+}
+
+interface PerformanceAnalysis {
+  score: number;
+  performance_issues: Array<{
+    type: string;
+    location: string;
+    impact: string;
+    suggestion: string;
+    description?: string;
+    message?: string;
+    [key: string]: unknown;
+  }>;
+  optimization_opportunities: Array<{
+    area: string;
+    potential_gain: string;
+    effort: string;
+    [key: string]: unknown;
+  }>;
+  memory_concerns: Array<{
+    issue: string;
+    location: string;
+    recommendation: string;
+    [key: string]: unknown;
+  }>;
+}
+
+interface IntegrationAnalysis {
+  external_services: string[];
+  integration_points: Array<{
+    type: string;
+    service: string;
+    protocol: string;
+  }>;
+  api_calls: string[];
+}
+
+interface OverallAssessment {
+  summary: string;
+  strengths: string[];
+  weaknesses: string[];
+  priority_score: number;
+}
+
+interface FileRecommendations {
+  security_improvements?: Array<
+    string | { message?: string; description?: string }
+  >;
+  code_quality_improvements?: Array<
+    string | { message?: string; description?: string }
+  >;
+  architectural_improvements?: Array<
+    string | { message?: string; description?: string }
+  >;
+  performance_improvements?: Array<
+    string | { message?: string; description?: string }
+  >;
+  maintenance_improvements?: Array<
+    string | { message?: string; description?: string }
+  >;
+}
+
+interface ConsolidatedFindings {
+  critical_issues: string[];
+  high_priority_issues: string[];
+  improvement_opportunities: string[];
+}
+
+interface AnalysisMetrics {
+  overall_project_score: number;
+  total_issues: number;
+  files_with_issues: number;
+}
+
+interface ProjectRecommendations {
+  immediate_actions: string[];
+  short_term_improvements: string[];
+  long_term_strategic: string[];
+}
+
+interface CachedAnalysisEntry {
+  analysis: FileAnalysisData;
+  fullAnalysis: FullFileAnalysis;
+}
+
+interface SecurityContextData {
+  semgrep?: SemgrepReport;
+  trivy?: TrivyReport;
+}
+
+interface LanguageConfig {
+  extensions: string[];
+  indexFiles: string[];
+}
+
+interface RAGResult {
+  content: string;
+  metadata?: {
+    source: string;
+    relevance?: number;
   };
 }
 
-/**
- * Load project inspection data to get exclude paths
- */
 async function loadProjectInspection(): Promise<ProjectInspection | null> {
   try {
     const inspectionPath = path.join(
@@ -514,26 +724,15 @@ async function loadProjectInspection(): Promise<ProjectInspection | null> {
   }
 }
 
-/**
- * Get exclude paths from project inspection data
- */
-/**
- * Usa sistema centralizado mergeExcludes para exclusões dinâmicas agnósticas
- * Segue o princípio: "100% real data via MCP integration - Zero simulations"
- * Inclui automaticamente exclusão da pasta .clia e outras exclusões sistêmicas
- */
 function getExcludePaths(
   inspection: ProjectInspection | null,
   configExcludes: string[] = [],
   config?: any
 ): string[] {
-  // 1. DADOS REAIS: Usar sistema mergeExcludes para exclusões dinâmicas centralizadas
   const systemExcludes = mergeExcludes(config || {}, null);
 
-  // 2. DADOS REAIS: Combinar com exclusões específicas do analyze
   const allExcludes = new Set<string>([...systemExcludes, ...configExcludes]);
 
-  // 3. DADOS REAIS: Adicionar exclusões descobertas na inspeção do projeto (se disponível)
   if (inspection?.ragOptimization?.directoryStructure?.excludePaths) {
     inspection.ragOptimization.directoryStructure.excludePaths.forEach(
       (exclude) => {
@@ -542,7 +741,6 @@ function getExcludePaths(
     );
   }
 
-  // 4. DADOS REAIS: Adicionar padrões de arquivos descobertos (se disponível)
   if (inspection?.ragOptimization?.filePatterns?.exclude) {
     inspection.ragOptimization.filePatterns.exclude.forEach((pattern) => {
       allExcludes.add(pattern);
@@ -564,10 +762,10 @@ interface AnalysisResult {
     analysisMode: string;
     promptVersion: string;
   };
-  file_analyses: any[];
-  consolidated_findings: any;
-  metrics: any;
-  recommendations: any;
+  file_analyses: FullFileAnalysis[];
+  consolidated_findings: ConsolidatedFindings;
+  metrics: AnalysisMetrics;
+  recommendations: ProjectRecommendations;
   dead_code?: DeadCodeResult;
   dependency_graph?: {
     format: string;
@@ -576,7 +774,6 @@ interface AnalysisResult {
   };
 }
 
-// Zod schemas for type validation
 const FileAnalysisPromptContextSchema = z.object({
   projectName: z.string(),
   fileName: z.string(),
@@ -927,7 +1124,6 @@ function assertFileAnalysisResponse(obj: unknown): FileAnalysisResponse {
     getLogger().warn(
       `File analysis response validation failed: ${res.error.message}`
     );
-    // Return the object as-is with passthrough, but log the validation error
     return obj as FileAnalysisResponse;
   }
   return res.data;
@@ -939,13 +1135,11 @@ function assertDeadCodeResponse(obj: unknown): DeadCodeResponse {
     getLogger().warn(
       `Dead code analysis response validation failed: ${res.error.message}`
     );
-    // Return the object as-is with passthrough, but log the validation error
     return obj as DeadCodeResponse;
   }
   return res.data;
 }
 
-// Cache functions
 function generateContentHash(content: string): string {
   return crypto.createHash('md5').update(content, 'utf8').digest('hex');
 }
@@ -958,7 +1152,6 @@ async function loadCache(): Promise<CacheData> {
       return JSON.parse(content) as CacheData;
     }
   } catch (error) {
-    // Just return empty cache on error
   }
   return {};
 }
@@ -974,7 +1167,7 @@ async function saveCache(cache: CacheData): Promise<void> {
 function isCacheValid(entry: CacheEntry, currentHash: string): boolean {
   const cacheTime = new Date(entry.timestamp).getTime();
   const now = Date.now();
-  const maxAge = 30 * 24 * 60 * 60 * 1000; // 30 days in milliseconds
+  const maxAge = 30 * 24 * 60 * 60 * 1000;
 
   return entry.contentHash === currentHash && now - cacheTime < maxAge;
 }
@@ -983,10 +1176,6 @@ function hasFullAnalysisCache(entry: CacheEntry, currentHash: string): boolean {
   return isCacheValid(entry, currentHash) && entry.fullAnalysis !== undefined;
 }
 
-/**
- * Standard Command Structure v1.0.0
- * Pattern: loadConfig → makeLLMForTier → PromptTemplateEngine → Batch Processing
- */
 async function runAnalyze(options: AnalyzeOptions): Promise<void> {
   const logger = getLogger();
   const config = loadConfig();
@@ -1024,7 +1213,6 @@ async function runAnalyze(options: AnalyzeOptions): Promise<void> {
           const analysis = await processFile(file, config, options);
           fileResults.push(analysis);
 
-          // Update cache with complete analysis after LLM processing
           await updateCacheWithFileAnalysis(file.file, analysis, config);
         } catch (error) {
           logger.error(`Failed to analyze file ${file.file}:`, error);
@@ -1055,16 +1243,13 @@ async function runAnalyze(options: AnalyzeOptions): Promise<void> {
   }
 }
 
-/**
- * Discover and prepare files for analysis with enhanced dependency extraction
- */
 async function discoverAndPrepareFiles(
   targetPaths: string[],
-  config: any,
+  config: Config,
   options: AnalyzeOptions
 ): Promise<{
   filesToProcess: FileAnalysisData[];
-  cachedAnalyses: { analysis: FileAnalysisData; fullAnalysis: any }[];
+  cachedAnalyses: CachedAnalysisEntry[];
 }> {
   const logger = getLogger();
 
@@ -1083,7 +1268,7 @@ async function discoverAndPrepareFiles(
   let cacheUpdated = false;
 
   const filesToProcess: FileAnalysisData[] = [];
-  const cachedAnalyses: { analysis: FileAnalysisData; fullAnalysis: any }[] =
+  const cachedAnalyses: CachedAnalysisEntry[] =
     [];
 
   for (const targetPath of targetPaths) {
@@ -1098,7 +1283,7 @@ async function discoverAndPrepareFiles(
         const content = await fs.promises.readFile(filePath, 'utf-8');
         const language = detectLanguage(filePath);
         const stats = await fs.promises.stat(filePath);
-        const maxSizeBytes = 0.1 * 1024 * 1024; // 0.1 MB
+        const maxSizeBytes = 0.1 * 1024 * 1024;
 
         if (stats.size > maxSizeBytes) {
           logger.info(
@@ -1112,10 +1297,9 @@ async function discoverAndPrepareFiles(
 
         const cached = cache[relativePath];
         if (cached && hasFullAnalysisCache(cached, contentHash)) {
-          // Restore content to cached analysis when needed (content is not stored in cache)
           const restoredAnalysis = { 
             ...cached.analysis, 
-            content: content, // Re-add content for processing
+            content: content,
             ragContext: await getSourceAnalysis(relativePath, processAskQuery)
           };
           
@@ -1164,14 +1348,12 @@ async function discoverAndPrepareFiles(
 
         filesToProcess.push(fileAnalysis);
 
-        // Don't create cache entry here - only after successful LLM analysis
       } catch (error) {
         throw new Error(`Failed to read file ${filePath}: ${error}`);
       }
     }
   }
 
-  // Cache will be updated only after successful LLM analysis in updateCacheWithFileAnalysis
 
   const sortedFilesToProcess = filesToProcess.sort(
     (a, b) => b.complexity_estimate - a.complexity_estimate
@@ -1184,15 +1366,12 @@ function determineComplexityTier(
   complexity: number,
   fileSize: number
 ): 'low' | 'medium' | 'high' {
-  // High complexity: complex files or large files
   if (complexity > 500 || fileSize > 20000) {
     return 'high';
   }
-  // Medium complexity: moderate complexity
   if (complexity > 150 || fileSize > 5000) {
     return 'medium';
   }
-  // Low complexity: simple files
   return 'low';
 }
 
@@ -1212,7 +1391,7 @@ function resolveOutputLanguage(
 
 async function processFile(
   file: FileAnalysisData,
-  config: any,
+  config: Config,
   options: AnalyzeOptions
 ): Promise<FileAnalysisResponse> {
   const outputLanguage = resolveOutputLanguage(options, config);
@@ -1240,7 +1419,7 @@ async function processFile(
     const result = await execPrompt<
       FileAnalysisPromptContext,
       FileAnalysisResponse
-    >('analyze/consolidated-analysis', promptData, '1.0.0', 'default', 7, 0.3);
+    >('analyze/consolidated-analysis', promptData, '1.0.0', 'default', 0.3, 3);
 
     return assertFileAnalysisResponse(result);
   } catch (error) {
@@ -1248,19 +1427,17 @@ async function processFile(
   }
 }
 
-// Security context cache to avoid repeated expensive MCP calls
 let securityReportsCache: {
-  semgrep?: any;
-  trivy?: any;
+  semgrep?: SemgrepReport;
+  trivy?: TrivyReport;
   timestamp?: number;
 } = {};
 
-const SECURITY_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const SECURITY_CACHE_TTL = 5 * 60 * 1000;
 
 async function getSecurityReports() {
   const now = Date.now();
   
-  // Check if cache is still valid
   if (securityReportsCache.timestamp && 
       (now - securityReportsCache.timestamp) < SECURITY_CACHE_TTL &&
       securityReportsCache.semgrep && securityReportsCache.trivy) {
@@ -1270,13 +1447,11 @@ async function getSecurityReports() {
     };
   }
 
-  // Cache miss or expired, fetch new data
   try {
     const mcpClient = McpClient.fromConfig();
     const semgrepReport = await mcpClient.semgrepScan();
     const trivyReport = await mcpClient.trivyScan();
     
-    // Update cache
     securityReportsCache = {
       semgrep: semgrepReport,
       trivy: trivyReport,
@@ -1285,7 +1460,6 @@ async function getSecurityReports() {
     
     return { semgrepReport, trivyReport };
   } catch (error) {
-    // Return cached data if available, even if expired
     if (securityReportsCache.semgrep && securityReportsCache.trivy) {
       return {
         semgrepReport: securityReportsCache.semgrep,
@@ -1296,15 +1470,14 @@ async function getSecurityReports() {
   }
 }
 
-async function collectContextsForFile(file: FileAnalysisData, config: any) {
+async function collectContextsForFile(file: FileAnalysisData, config: Config) {
   const stackContext = await getStackContext();
 
   let securityContext = '';
   try {
     const { semgrepReport, trivyReport } = await getSecurityReports();
 
-    // Filter security findings to only those relevant to the current file
-    const fileSpecificFindings = semgrepReport?.findings?.filter((finding: any) => 
+    const fileSpecificFindings = semgrepReport?.findings?.filter((finding) => 
       finding.path && (
         finding.path.includes(file.file) || 
         path.resolve(finding.path) === path.resolve(file.file) ||
@@ -1312,7 +1485,6 @@ async function collectContextsForFile(file: FileAnalysisData, config: any) {
       )
     ) || [];
 
-    // Only include file-specific findings in context to reduce noise
     if (fileSpecificFindings.length > 0) {
       securityContext = JSON.stringify(
         {
@@ -1366,7 +1538,7 @@ async function collectContextsForFile(file: FileAnalysisData, config: any) {
   };
 }
 
-async function collectContexts(files: FileAnalysisData[], config: any) {
+async function collectContexts(files: FileAnalysisData[], config: Config) {
   const stackContext = await getStackContext();
 
   const filePaths = files.map((f: FileAnalysisData) => f.file);
@@ -1440,7 +1612,7 @@ async function collectContexts(files: FileAnalysisData[], config: any) {
   return {
     stackContext: JSON.stringify(stackContext, null, 2),
     ragContext:
-      ragContext?.map((r: any) => r.content).join('\n\n') ||
+      ragContext?.map((r: RAGResult) => r.content).join('\n\n') ||
       'No RAG context available',
     securityContext,
     integrationContext,
@@ -1472,7 +1644,6 @@ async function saveAnalysisResults(
     await fs.promises.writeFile(markdownPath, markdownContent);
   }
 
-  // Save dependency graph as separate file if generated
   if (result.dependency_graph) {
     const graphExtension =
       result.dependency_graph.format === 'plantuml'
@@ -1527,9 +1698,8 @@ ${result.recommendations.short_term_improvements?.map((improvement: string) => `
 ### Long-term Strategic
 ${result.recommendations.long_term_strategic?.map((strategic: string) => `- ${strategic}`).join('\n') || 'No long-term strategic recommendations'}`;
 
-  // Add dependency graph if present
   if (result.dependency_graph) {
-    markdown += `\n\n## 📊 Dependency Graph (${result.dependency_graph.format.toUpperCase()})
+    markdown += `\n\n## Dependency Graph (${result.dependency_graph.format.toUpperCase()})
 
 \`\`\`${result.dependency_graph.format}
 ${result.dependency_graph.diagram}
@@ -1549,13 +1719,13 @@ ${result.dependency_graph.diagram}
 
 `;
 
-    result.file_analyses.forEach((fileAnalysis: any, index: number) => {
-      const scores = fileAnalysis.analysis?.clean_code?.score || 'N/A';
-      const securityScore = fileAnalysis.analysis?.security?.score || 'N/A';
+    result.file_analyses.forEach((fileAnalysis: FullFileAnalysis, index: number) => {
+      const scores = fileAnalysis.clean_code_analysis?.score || 'N/A';
+      const securityScore = fileAnalysis.security_analysis?.score || 'N/A';
       const maintainabilityScore =
-        fileAnalysis.analysis?.maintainability?.score || 'N/A';
+        fileAnalysis.maintainability_analysis?.score || 'N/A';
       const performanceScore =
-        fileAnalysis.analysis?.performance?.score || 'N/A';
+        fileAnalysis.performance_analysis?.score || 'N/A';
 
       markdown += `### ${index + 1}. \`${fileAnalysis.file}\`
 
@@ -1577,29 +1747,25 @@ ${result.dependency_graph.diagram}
 
 ${fileAnalysis.purpose || 'No purpose description available'}
 
-#### 🚨 Security Analysis
+#### Security Analysis
 
-${formatSecurityAnalysis(fileAnalysis.analysis?.security)}
+${formatSecurityAnalysis(fileAnalysis.security_analysis!)}
 
-#### 🧹 Clean Code Issues
+#### Clean Code Issues
 
-${formatCleanCodeAnalysis(fileAnalysis.analysis?.clean_code)}
+${formatCleanCodeAnalysis(fileAnalysis.clean_code_analysis!)}
 
 #### SOLID Analysis
 
-${formatSolidAnalysis(fileAnalysis.analysis?.solid_principles)}
+${formatSolidAnalysis(fileAnalysis.solid_analysis!)}
 
 #### Performance Analysis
 
-${formatPerformanceAnalysis(fileAnalysis.analysis?.performance)}
-
-#### Dead Code Analysis
-
-${formatDeadCodeAnalysis(fileAnalysis.analysis?.dead_code_analysis)}
+${formatPerformanceAnalysis(fileAnalysis.performance_analysis!)}
 
 #### Recommendations
 
-${formatRecommendations(fileAnalysis.recommendations)}
+${formatRecommendations(fileAnalysis.recommendations!)}
 
 ---
 
@@ -1607,7 +1773,6 @@ ${formatRecommendations(fileAnalysis.recommendations)}
     });
   }
 
-  // Add dead code analysis if present
   if (result.dead_code) {
     markdown += `\n\n## 🧹 Dead Code Analysis
 
@@ -1669,7 +1834,7 @@ ${
   return markdown;
 }
 
-function formatSecurityAnalysis(securityAnalysis: any): string {
+function formatSecurityAnalysis(securityAnalysis: SecurityAnalysis): string {
   if (!securityAnalysis) return 'No security analysis available';
 
   let content = '';
@@ -1679,8 +1844,7 @@ function formatSecurityAnalysis(securityAnalysis: any): string {
     securityAnalysis.vulnerabilities.length > 0
   ) {
     content += '**Vulnerabilities:**\n';
-    securityAnalysis.vulnerabilities.forEach((vuln: any) => {
-      // Handle both string and object formats
+    securityAnalysis.vulnerabilities.forEach((vuln) => {
       if (typeof vuln === 'string') {
         content += `- ${vuln}\n`;
       } else {
@@ -1713,7 +1877,7 @@ function formatSecurityAnalysis(securityAnalysis: any): string {
     securityAnalysis.exposed_secrets.length > 0
   ) {
     content += '**Exposed Secrets:**\n';
-    securityAnalysis.exposed_secrets.forEach((secret: any) => {
+    securityAnalysis.exposed_secrets.forEach((secret) => {
       if (typeof secret === 'string') {
         content += `- ${secret}\n`;
       } else {
@@ -1725,7 +1889,7 @@ function formatSecurityAnalysis(securityAnalysis: any): string {
   return content || 'No security issues identified';
 }
 
-function formatCleanCodeAnalysis(cleanCodeAnalysis: any): string {
+function formatCleanCodeAnalysis(cleanCodeAnalysis: CleanCodeAnalysis): string {
   if (!cleanCodeAnalysis) return 'No clean code analysis available';
 
   let content = '';
@@ -1735,7 +1899,7 @@ function formatCleanCodeAnalysis(cleanCodeAnalysis: any): string {
     cleanCodeAnalysis.naming_issues.length > 0
   ) {
     content += '**Naming Issues:**\n';
-    cleanCodeAnalysis.naming_issues.forEach((issue: any) => {
+    cleanCodeAnalysis.naming_issues.forEach((issue) => {
       if (typeof issue === 'string') {
         content += `- ${issue}\n`;
       } else {
@@ -1753,7 +1917,7 @@ function formatCleanCodeAnalysis(cleanCodeAnalysis: any): string {
     cleanCodeAnalysis.complexity_concerns.length > 0
   ) {
     content += '**Complexity Concerns:**\n';
-    cleanCodeAnalysis.complexity_concerns.forEach((concern: any) => {
+    cleanCodeAnalysis.complexity_concerns.forEach((concern) => {
       if (typeof concern === 'string') {
         content += `- ${concern}\n`;
       } else {
@@ -1772,7 +1936,7 @@ function formatCleanCodeAnalysis(cleanCodeAnalysis: any): string {
     cleanCodeAnalysis.organization_issues.length > 0
   ) {
     content += '**Organization Issues:**\n';
-    cleanCodeAnalysis.organization_issues.forEach((issue: any) => {
+    cleanCodeAnalysis.organization_issues.forEach((issue) => {
       if (typeof issue === 'string') {
         content += `- ${issue}\n`;
       } else {
@@ -1786,15 +1950,14 @@ function formatCleanCodeAnalysis(cleanCodeAnalysis: any): string {
   return content || 'No code quality issues identified';
 }
 
-function formatSolidAnalysis(solidAnalysis: any): string {
+function formatSolidAnalysis(solidAnalysis: SolidAnalysis): string {
   if (!solidAnalysis) return 'No SOLID analysis available';
 
   let content = '';
 
   if (solidAnalysis.violations && solidAnalysis.violations.length > 0) {
     content += '**SOLID Violations:**\n';
-    solidAnalysis.violations.forEach((violation: any) => {
-      // Handle both string and object formats
+    solidAnalysis.violations.forEach((violation) => {
       if (typeof violation === 'string') {
         content += `- ${violation}\n`;
       } else {
@@ -1835,7 +1998,7 @@ function formatSolidAnalysis(solidAnalysis: any): string {
   return content || 'No SOLID violations identified';
 }
 
-function formatPerformanceAnalysis(performanceAnalysis: any): string {
+function formatPerformanceAnalysis(performanceAnalysis: PerformanceAnalysis): string {
   if (!performanceAnalysis) return 'No performance analysis available';
 
   let content = '';
@@ -1845,7 +2008,7 @@ function formatPerformanceAnalysis(performanceAnalysis: any): string {
     performanceAnalysis.performance_issues.length > 0
   ) {
     content += '**Performance Issues:**\n';
-    performanceAnalysis.performance_issues.forEach((issue: any) => {
+    performanceAnalysis.performance_issues.forEach((issue) => {
       if (typeof issue === 'string') {
         content += `- ${issue}\n`;
       } else {
@@ -1863,7 +2026,7 @@ function formatPerformanceAnalysis(performanceAnalysis: any): string {
   ) {
     content += '**Optimization Opportunities:**\n';
     performanceAnalysis.optimization_opportunities.forEach(
-      (opportunity: any) => {
+      (opportunity: string | { area: string; potential_gain: string; effort: string; description?: string; message?: string; expected_impact?: string; [key: string]: unknown }) => {
         if (typeof opportunity === 'string') {
           content += `- ${opportunity}\n`;
         } else {
@@ -1881,7 +2044,7 @@ function formatPerformanceAnalysis(performanceAnalysis: any): string {
     performanceAnalysis.memory_concerns.length > 0
   ) {
     content += '**Memory Concerns:**\n';
-    performanceAnalysis.memory_concerns.forEach((concern: any) => {
+    performanceAnalysis.memory_concerns.forEach((concern) => {
       if (typeof concern === 'string') {
         content += `- ${concern}\n`;
       } else {
@@ -1894,7 +2057,7 @@ function formatPerformanceAnalysis(performanceAnalysis: any): string {
   return content || 'No performance issues identified';
 }
 
-function formatDeadCodeAnalysis(deadCodeAnalysis: any): string {
+function formatDeadCodeAnalysis(deadCodeAnalysis: DeadCodeAnalysis): string {
   if (!deadCodeAnalysis) return 'No dead code analysis available';
 
   let content = '';
@@ -1904,7 +2067,7 @@ function formatDeadCodeAnalysis(deadCodeAnalysis: any): string {
     deadCodeAnalysis.unused_private_functions.length > 0
   ) {
     content += '**Unused Private Functions:**\n';
-    deadCodeAnalysis.unused_private_functions.forEach((func: any) => {
+    deadCodeAnalysis.unused_private_functions.forEach((func: string | DeadCodeItem) => {
       if (typeof func === 'string') {
         content += `- ${func}\n`;
       } else {
@@ -1922,7 +2085,7 @@ function formatDeadCodeAnalysis(deadCodeAnalysis: any): string {
     deadCodeAnalysis.unused_private_classes.length > 0
   ) {
     content += '**Unused Private Classes:**\n';
-    deadCodeAnalysis.unused_private_classes.forEach((cls: any) => {
+    deadCodeAnalysis.unused_private_classes.forEach((cls: string | DeadCodeItem) => {
       if (typeof cls === 'string') {
         content += `- ${cls}\n`;
       } else {
@@ -1940,7 +2103,7 @@ function formatDeadCodeAnalysis(deadCodeAnalysis: any): string {
     deadCodeAnalysis.unused_private_variables.length > 0
   ) {
     content += '**Unused Private Variables:**\n';
-    deadCodeAnalysis.unused_private_variables.forEach((variable: any) => {
+    deadCodeAnalysis.unused_private_variables.forEach((variable: string | DeadCodeItem) => {
       if (typeof variable === 'string') {
         content += `- ${variable}\n`;
       } else {
@@ -1958,7 +2121,7 @@ function formatDeadCodeAnalysis(deadCodeAnalysis: any): string {
     deadCodeAnalysis.unreachable_code.length > 0
   ) {
     content += '**Unreachable Code:**\n';
-    deadCodeAnalysis.unreachable_code.forEach((code: any) => {
+    deadCodeAnalysis.unreachable_code.forEach((code: string | DeadCodeItem) => {
       if (typeof code === 'string') {
         content += `- ${code}\n`;
       } else {
@@ -1971,7 +2134,7 @@ function formatDeadCodeAnalysis(deadCodeAnalysis: any): string {
   return content || 'No dead code identified in this file';
 }
 
-function formatRecommendations(recommendations: any): string {
+function formatRecommendations(recommendations: FileRecommendations): string {
   if (!recommendations) return 'No specific recommendations available';
 
   let content = '';
@@ -1981,7 +2144,7 @@ function formatRecommendations(recommendations: any): string {
     recommendations.security_improvements.length > 0
   ) {
     content += '**Security Improvements:**\n';
-    recommendations.security_improvements.forEach((improvement: any) => {
+    recommendations.security_improvements.forEach((improvement: string | { message?: string; description?: string }) => {
       const text =
         typeof improvement === 'string'
           ? improvement
@@ -1998,7 +2161,7 @@ function formatRecommendations(recommendations: any): string {
     recommendations.code_quality_improvements.length > 0
   ) {
     content += '**Code Quality Improvements:**\n';
-    recommendations.code_quality_improvements.forEach((improvement: any) => {
+    recommendations.code_quality_improvements.forEach((improvement: string | { message?: string; description?: string }) => {
       const text =
         typeof improvement === 'string'
           ? improvement
@@ -2015,7 +2178,7 @@ function formatRecommendations(recommendations: any): string {
     recommendations.architectural_improvements.length > 0
   ) {
     content += '**Architectural Improvements:**\n';
-    recommendations.architectural_improvements.forEach((improvement: any) => {
+    recommendations.architectural_improvements.forEach((improvement: string | { message?: string; description?: string }) => {
       const text =
         typeof improvement === 'string'
           ? improvement
@@ -2032,7 +2195,7 @@ function formatRecommendations(recommendations: any): string {
     recommendations.performance_improvements.length > 0
   ) {
     content += '**Performance Improvements:**\n';
-    recommendations.performance_improvements.forEach((improvement: any) => {
+    recommendations.performance_improvements.forEach((improvement: string | { message?: string; description?: string }) => {
       const text =
         typeof improvement === 'string'
           ? improvement
@@ -2049,7 +2212,7 @@ function formatRecommendations(recommendations: any): string {
     recommendations.maintenance_improvements.length > 0
   ) {
     content += '**Maintenance Improvements:**\n';
-    recommendations.maintenance_improvements.forEach((improvement: any) => {
+    recommendations.maintenance_improvements.forEach((improvement: string | { message?: string; description?: string }) => {
       const text =
         typeof improvement === 'string'
           ? improvement
@@ -2076,11 +2239,9 @@ function displaySummary(result: AnalysisResult): void {
   );
 }
 
-// Utility functions
 function estimateComplexity(content: string, language: string): number {
   const lines = content.split('\n').length;
 
-  // Language-agnostic complexity patterns following COMPLETE_DEVELOPMENT_GUIDE.md
   const complexityPatterns = getComplexityPatternsForLanguage(language);
 
   let structureCount = 0;
@@ -2089,15 +2250,10 @@ function estimateComplexity(content: string, language: string): number {
     structureCount += matches.length;
   }
 
-  // Base complexity: lines + weighted structures
   const complexity = lines + structureCount * 10;
   return complexity;
 }
 
-/**
- * Get complexity detection patterns for each supported language
- * Based on CLIA supported languages: C#, Java, JS/TS, Ruby, Rust, Python, PHP, Go
- */
 function getComplexityPatternsForLanguage(language: string): RegExp[] {
   const basePatterns: RegExp[] = [];
 
@@ -2106,7 +2262,7 @@ function getComplexityPatternsForLanguage(language: string): RegExp[] {
     case 'typescript':
       return [
         /\b(function|class|interface|type|enum)\s+\w+/g,
-        /\b(const|let|var)\s+\w+\s*=\s*\(/g, // Arrow functions
+        /\b(const|let|var)\s+\w+\s*=\s*\(/g,
         /\bexport\s+(class|function|interface|type)/g,
         /\basync\s+(function|\w+)/g,
       ];
@@ -2114,7 +2270,7 @@ function getComplexityPatternsForLanguage(language: string): RegExp[] {
     case 'python':
       return [
         /^\s*(def|class|async\s+def)\s+\w+/gm,
-        /^@\w+/gm, // Decorators
+        /^@\w+/gm,
         /^\s*with\s+\w+/gm,
         /^\s*try:/gm,
       ];
@@ -2122,8 +2278,8 @@ function getComplexityPatternsForLanguage(language: string): RegExp[] {
     case 'java':
       return [
         /\b(public|private|protected)\s+(class|interface|enum)/g,
-        /\b(public|private|protected)\s+.*\s+\w+\s*\(/g, // Methods
-        /\b@\w+/g, // Annotations
+        /\b(public|private|protected)\s+.*\s+\w+\s*\(/g,
+        /\b@\w+/g,
         /\btry\s*\{/g,
       ];
 
@@ -2131,8 +2287,8 @@ function getComplexityPatternsForLanguage(language: string): RegExp[] {
     case 'c#':
       return [
         /\b(public|private|protected|internal)\s+(class|interface|struct|enum)/g,
-        /\b(public|private|protected|internal)\s+.*\s+\w+\s*\(/g, // Methods
-        /\[[\w\s,()]+\]/g, // Attributes
+        /\b(public|private|protected|internal)\s+.*\s+\w+\s*\(/g,
+        /\[[\w\s,()]+\]/g,
         /\btry\s*\{/g,
       ];
 
@@ -2170,34 +2326,30 @@ function getComplexityPatternsForLanguage(language: string): RegExp[] {
 
     case 'markdown':
       return [
-        /^#{1,6}\s+/gm, // Headers
-        /```[\w]*$/gm, // Code blocks
-        /^\*\s+/gm, // Lists
-        /^\d+\.\s+/gm, // Numbered lists
+        /^#{1,6}\s+/gm,
+        /```[\w]*$/gm,
+        /^\*\s+/gm,
+        /^\d+\.\s+/gm,
       ];
 
     case 'json':
     case 'yaml':
     case 'toml':
       return [
-        /^\s*"[\w-]+"\s*:/gm, // JSON keys
-        /^\s*[\w-]+\s*:/gm, // YAML/TOML keys
-        /^\s*-\s+/gm, // YAML arrays
+        /^\s*"[\w-]+"\s*:/gm,
+        /^\s*[\w-]+\s*:/gm,
+        /^\s*-\s+/gm,
       ];
 
     default:
-      // Generic patterns for unknown languages
       return [
         /\b(function|def|class|struct|enum|interface)\s+\w+/g,
-        /\{[\s\S]*?\}/g, // Block structures
-        /\([\s\S]*?\)/g, // Function calls
+        /\{[\s\S]*?\}/g,
+        /\([\s\S]*?\)/g,
       ];
   }
 }
 
-/**
- * Extract dependencies from source code
- */
 function extractDependencies(
   content: string,
   language: string,
@@ -2217,7 +2369,6 @@ function extractDependencies(
     private_variables: [],
   };
 
-  // Language-specific dependency extraction for all 9 supported languages
   switch (language.toLowerCase()) {
     case 'typescript':
     case 'javascript':
@@ -2253,15 +2404,11 @@ function extractDependencies(
   return dependencies;
 }
 
-/**
- * Extract JavaScript/TypeScript dependencies
- */
 function extractJavaScriptDependencies(
   content: string,
   dependencies: DependencyInfo,
   filePath: string
 ): void {
-  // Import statements (including type imports)
   const importRegex =
     /import\s+(?:type\s+)?(?:\{([^}]+)\}|\*\s+as\s+(\w+)|(\w+))\s+from\s+['"`]([^'"`]+)['"`]/g;
   let match;
@@ -2277,21 +2424,17 @@ function extractJavaScriptDependencies(
     }
 
     if (match[1]) {
-      // Named imports (including type imports)
       const namedImports = match[1]
         .split(',')
         .map((imp) => imp.trim().replace(/^type\s+/, ''));
       dependencies.imported_functions.push(...namedImports);
     } else if (match[2]) {
-      // Namespace import
       dependencies.imported_variables.push(match[2]);
     } else if (match[3]) {
-      // Default import
       dependencies.imported_variables.push(match[3]);
     }
   }
 
-  // Type-only imports (alternative pattern)
   const typeImportRegex =
     /import\s+type\s+\{([^}]+)\}\s+from\s+['"`]([^'"`]+)['"`]/g;
   while ((match = typeImportRegex.exec(content)) !== null) {
@@ -2315,7 +2458,6 @@ function extractJavaScriptDependencies(
     });
   }
 
-  // Individual type imports (e.g., import type { SomeType } from './module')
   const individualTypeImportRegex =
     /import\s+type\s+(\w+)\s+from\s+['"`]([^'"`]+)['"`]/g;
   while ((match = individualTypeImportRegex.exec(content)) !== null) {
@@ -2337,7 +2479,6 @@ function extractJavaScriptDependencies(
     }
   }
 
-  // Export statements - improved regex to handle different export patterns
   const exportFunctionRegex = /export\s+(?:default\s+)?(?:async\s+)?function\s+(\w+)/g;
   while ((match = exportFunctionRegex.exec(content)) !== null) {
     dependencies.exported_functions.push(match[1]);
@@ -2353,18 +2494,16 @@ function extractJavaScriptDependencies(
     dependencies.exported_variables.push(match[2]);
   }
 
-  // TypeScript interface and type exports
   const exportInterfaceRegex = /export\s+(?:default\s+)?interface\s+(\w+)/g;
   while ((match = exportInterfaceRegex.exec(content)) !== null) {
-    dependencies.exported_classes.push(match[1]); // Treat interfaces as classes for categorization
+    dependencies.exported_classes.push(match[1]);
   }
 
   const exportTypeRegex = /export\s+(?:default\s+)?type\s+(\w+)/g;
   while ((match = exportTypeRegex.exec(content)) !== null) {
-    dependencies.exported_variables.push(match[1]); // Treat type aliases as variables
+    dependencies.exported_variables.push(match[1]);
   }
 
-  // Named exports (export { name1, name2 })
   const namedExportRegex = /export\s*\{([^}]+)\}/g;
   while ((match = namedExportRegex.exec(content)) !== null) {
     const names = match[1].split(',').map(name => name.trim().replace(/\s+as\s+\w+$/, ''));
@@ -2375,7 +2514,6 @@ function extractJavaScriptDependencies(
     });
   }
 
-  // Private functions (not exported) - including function declarations, expressions, and arrow functions
   const privateFunctionRegex =
     /(?<!export\s+)(?<!export\s+default\s+)function\s+(\w+)/g;
   while ((match = privateFunctionRegex.exec(content)) !== null) {
@@ -2385,7 +2523,6 @@ function extractJavaScriptDependencies(
     }
   }
 
-  // Arrow functions and function expressions assigned to variables
   const arrowFunctionRegex =
     /(?<!export\s+)(const|let|var)\s+(\w+)\s*=\s*(?:\([^)]*\)\s*=>|\w+\s*=>|async\s*\([^)]*\)\s*=>|async\s+\w+\s*=>)/g;
   while ((match = arrowFunctionRegex.exec(content)) !== null) {
@@ -2398,7 +2535,6 @@ function extractJavaScriptDependencies(
     }
   }
 
-  // Function expressions
   const functionExpressionRegex =
     /(?<!export\s+)(const|let|var)\s+(\w+)\s*=\s*function/g;
   while ((match = functionExpressionRegex.exec(content)) !== null) {
@@ -2411,7 +2547,6 @@ function extractJavaScriptDependencies(
     }
   }
 
-  // Private classes (not exported)
   const privateClassRegex =
     /(?<!export\s+)(?<!export\s+default\s+)class\s+(\w+)/g;
   while ((match = privateClassRegex.exec(content)) !== null) {
@@ -2421,7 +2556,6 @@ function extractJavaScriptDependencies(
     }
   }
 
-  // Private variables (const, let, var not exported)
   const privateVarRegex = /(?<!export\s+)(const|let|var)\s+(\w+)\s*=/g;
   while ((match = privateVarRegex.exec(content)) !== null) {
     const name = match[2];
@@ -2430,7 +2564,6 @@ function extractJavaScriptDependencies(
     }
   }
 
-  // TypeScript private interfaces and types
   const privateInterfaceRegex = /(?<!export\s+)interface\s+(\w+)/g;
   while ((match = privateInterfaceRegex.exec(content)) !== null) {
     const name = match[1];
@@ -2448,15 +2581,11 @@ function extractJavaScriptDependencies(
   }
 }
 
-/**
- * Extract Python dependencies
- */
 function extractPythonDependencies(
   content: string,
   dependencies: DependencyInfo,
   filePath: string
 ): void {
-  // Import statements
   const importRegex = /^(?:from\s+(\S+)\s+)?import\s+(.+)$/gm;
   let match;
 
@@ -2477,31 +2606,26 @@ function extractPythonDependencies(
     dependencies.imported_functions.push(...imports);
   }
 
-  // Function definitions (all functions are considered private unless explicitly exported)
   const functionRegex = /^def\s+(\w+)/gm;
   while ((match = functionRegex.exec(content)) !== null) {
     const name = match[1];
     if (name.startsWith('_')) {
-      // Python convention: functions starting with _ are private
       dependencies.private_functions.push(name);
     } else {
       dependencies.exported_functions.push(name);
     }
   }
 
-  // Class definitions
   const classRegex = /^class\s+(\w+)/gm;
   while ((match = classRegex.exec(content)) !== null) {
     const name = match[1];
     if (name.startsWith('_')) {
-      // Python convention: classes starting with _ are private
       dependencies.private_classes.push(name);
     } else {
       dependencies.exported_classes.push(name);
     }
   }
 
-  // Variable definitions (global scope)
   const variableRegex = /^(\w+)\s*=\s*[^=]/gm;
   while ((match = variableRegex.exec(content)) !== null) {
     const name = match[1];
@@ -2527,15 +2651,11 @@ function extractPythonDependencies(
   }
 }
 
-/**
- * Extract Java dependencies
- */
 function extractJavaDependencies(
   content: string,
   dependencies: DependencyInfo,
   filePath: string
 ): void {
-  // Import statements
   const importRegex = /import\s+(?:static\s+)?([^;]+);/g;
   let match;
 
@@ -2551,7 +2671,6 @@ function extractJavaDependencies(
     }
   }
 
-  // Class definitions
   const classRegex = /(public|private|protected)?\s*class\s+(\w+)/g;
   while ((match = classRegex.exec(content)) !== null) {
     const visibility = match[1] || 'package';
@@ -2563,7 +2682,6 @@ function extractJavaDependencies(
     }
   }
 
-  // Method definitions
   const methodRegex =
     /(public|private|protected)?\s*(?:static\s+)?[\w<>]+\s+(\w+)\s*\(/g;
   while ((match = methodRegex.exec(content)) !== null) {
@@ -2577,15 +2695,11 @@ function extractJavaDependencies(
   }
 }
 
-/**
- * Extract C# dependencies
- */
 function extractCSharpDependencies(
   content: string,
   dependencies: DependencyInfo,
   filePath: string
 ): void {
-  // Using statements
   const usingRegex = /using\s+([^;]+);/g;
   let match;
 
@@ -2601,7 +2715,6 @@ function extractCSharpDependencies(
     }
   }
 
-  // Class definitions
   const classRegex = /(public|private|internal|protected)?\s*class\s+(\w+)/g;
   while ((match = classRegex.exec(content)) !== null) {
     const visibility = match[1] || 'internal';
@@ -2613,7 +2726,6 @@ function extractCSharpDependencies(
     }
   }
 
-  // Method definitions
   const methodRegex =
     /(public|private|protected|internal)?\s*(?:static\s+)?[\w<>]+\s+(\w+)\s*\(/g;
   while ((match = methodRegex.exec(content)) !== null) {
@@ -2627,15 +2739,11 @@ function extractCSharpDependencies(
   }
 }
 
-/**
- * Extract Ruby dependencies
- */
 function extractRubyDependencies(
   content: string,
   dependencies: DependencyInfo,
   filePath: string
 ): void {
-  // Require statements
   const requireRegex = /require\s+['"]([^'"]+)['"]/g;
   let match;
 
@@ -2651,19 +2759,16 @@ function extractRubyDependencies(
     }
   }
 
-  // Gem statements from Gemfile
   const gemRegex = /gem\s+['"]([^'"]+)['"]/g;
   while ((match = gemRegex.exec(content)) !== null) {
     dependencies.external_imports.push(match[1]);
   }
 
-  // Class definitions
   const classRegex = /^\s*class\s+(\w+)/gm;
   while ((match = classRegex.exec(content)) !== null) {
     dependencies.exported_classes.push(match[1]);
   }
 
-  // Method definitions (check for private keyword)
   const methodRegex = /^\s*def\s+(\w+)/gm;
   const privateMethodRegex = /private[\s\S]*?def\s+(\w+)/g;
   const privateMethods = new Set<string>();
@@ -2681,28 +2786,22 @@ function extractRubyDependencies(
     return match;
   });
 
-  // Module definitions
   const moduleRegex = /^\s*module\s+(\w+)/gm;
   while ((match = moduleRegex.exec(content)) !== null) {
     dependencies.exported_classes.push(match[1]);
   }
 
-  // Instance variables (private by default in Ruby)
   const instanceVarRegex = /@(\w+)/g;
   while ((match = instanceVarRegex.exec(content)) !== null) {
     dependencies.private_variables.push(`@${match[1]}`);
   }
 }
 
-/**
- * Extract Rust dependencies
- */
 function extractRustDependencies(
   content: string,
   dependencies: DependencyInfo,
   filePath: string
 ): void {
-  // Use statements
   const useRegex = /use\s+([^;]+);/g;
   let match;
 
@@ -2719,14 +2818,12 @@ function extractRustDependencies(
       dependencies.external_imports.push(usePath);
     }
 
-    // Extract imported items
     const importedItem = usePath.split('::').pop()?.replace(/[{}]/g, '');
     if (importedItem) {
       dependencies.imported_functions.push(importedItem);
     }
   }
 
-  // Function definitions (pub = public, no pub = private)
   const publicFunctionRegex = /pub\s+fn\s+(\w+)/g;
   const privateFunctionRegex = /(?<!pub\s+)fn\s+(\w+)/g;
 
@@ -2741,7 +2838,6 @@ function extractRustDependencies(
     }
   }
 
-  // Struct definitions
   const publicStructRegex = /pub\s+struct\s+(\w+)/g;
   const privateStructRegex = /(?<!pub\s+)struct\s+(\w+)/g;
 
@@ -2756,7 +2852,6 @@ function extractRustDependencies(
     }
   }
 
-  // Enum definitions
   const publicEnumRegex = /pub\s+enum\s+(\w+)/g;
   const privateEnumRegex = /(?<!pub\s+)enum\s+(\w+)/g;
 
@@ -2771,7 +2866,6 @@ function extractRustDependencies(
     }
   }
 
-  // Trait definitions
   const publicTraitRegex = /pub\s+trait\s+(\w+)/g;
   const privateTraitRegex = /(?<!pub\s+)trait\s+(\w+)/g;
 
@@ -2787,15 +2881,11 @@ function extractRustDependencies(
   }
 }
 
-/**
- * Extract PHP dependencies
- */
 function extractPhpDependencies(
   content: string,
   dependencies: DependencyInfo,
   filePath: string
 ): void {
-  // Use statements
   const useRegex = /use\s+([^;]+);/g;
   let match;
 
@@ -2811,7 +2901,6 @@ function extractPhpDependencies(
     }
   }
 
-  // Require/include statements
   const requireRegex =
     /(?:require|include)(?:_once)?\s*\(?['"]([^'"]+)['"]\)?/g;
   while ((match = requireRegex.exec(content)) !== null) {
@@ -2826,19 +2915,16 @@ function extractPhpDependencies(
     }
   }
 
-  // Class definitions
   const classRegex = /(?:abstract\s+)?class\s+(\w+)/g;
   while ((match = classRegex.exec(content)) !== null) {
     dependencies.exported_classes.push(match[1]);
   }
 
-  // Function definitions (global functions)
   const functionRegex = /function\s+(\w+)/g;
   while ((match = functionRegex.exec(content)) !== null) {
     dependencies.exported_functions.push(match[1]);
   }
 
-  // Method definitions with visibility
   const privateMethodRegex = /private\s+function\s+(\w+)/g;
   const protectedMethodRegex = /protected\s+function\s+(\w+)/g;
   const publicMethodRegex = /public\s+function\s+(\w+)/g;
@@ -2848,47 +2934,39 @@ function extractPhpDependencies(
   }
 
   while ((match = protectedMethodRegex.exec(content)) !== null) {
-    dependencies.private_functions.push(match[1]); // Protected treated as private scope
+    dependencies.private_functions.push(match[1]);
   }
 
   while ((match = publicMethodRegex.exec(content)) !== null) {
     dependencies.exported_functions.push(match[1]);
   }
 
-  // Private properties
   const privatePropertyRegex = /private\s+\$(\w+)/g;
   while ((match = privatePropertyRegex.exec(content)) !== null) {
     dependencies.private_variables.push(`$${match[1]}`);
   }
 
-  // Interface definitions
   const interfaceRegex = /interface\s+(\w+)/g;
   while ((match = interfaceRegex.exec(content)) !== null) {
     dependencies.exported_classes.push(match[1]);
   }
 
-  // Trait definitions
   const traitRegex = /trait\s+(\w+)/g;
   while ((match = traitRegex.exec(content)) !== null) {
     dependencies.exported_classes.push(match[1]);
   }
 }
 
-/**
- * Extract Go dependencies
- */
 function extractGoDependencies(
   content: string,
   dependencies: DependencyInfo,
   filePath: string
 ): void {
-  // Import statements
   const importRegex = /import\s+(?:\(([^)]+)\)|['"]([^'"]+)['"])/g;
   let match;
 
   while ((match = importRegex.exec(content)) !== null) {
     if (match[1]) {
-      // Multi-line imports
       const imports = match[1]
         .split('\n')
         .map((line) => {
@@ -2909,7 +2987,6 @@ function extractGoDependencies(
         }
       });
     } else if (match[2]) {
-      // Single import
       const importPath = match[2];
       const isInternal =
         importPath.startsWith('.') || !importPath.includes('.');
@@ -2922,7 +2999,6 @@ function extractGoDependencies(
     }
   }
 
-  // Function definitions (uppercase = public, lowercase = private in Go)
   const functionRegex = /func\s+(\w+)/g;
   while ((match = functionRegex.exec(content)) !== null) {
     const name = match[1];
@@ -2933,7 +3009,6 @@ function extractGoDependencies(
     }
   }
 
-  // Type definitions (structs, interfaces)
   const typeRegex = /type\s+(\w+)\s+(?:struct|interface)/g;
   while ((match = typeRegex.exec(content)) !== null) {
     const name = match[1];
@@ -2944,7 +3019,6 @@ function extractGoDependencies(
     }
   }
 
-  // Variable definitions
   const varRegex = /var\s+(\w+)\s+/g;
   while ((match = varRegex.exec(content)) !== null) {
     const name = match[1];
@@ -2955,7 +3029,6 @@ function extractGoDependencies(
     }
   }
 
-  // Constant definitions
   const constRegex = /const\s+(\w+)\s+/g;
   while ((match = constRegex.exec(content)) !== null) {
     const name = match[1];
@@ -2967,14 +3040,10 @@ function extractGoDependencies(
   }
 }
 
-/**
- * Generic dependency extraction for unknown languages
- */
 function extractGenericDependencies(
   content: string,
   dependencies: DependencyInfo
 ): void {
-  // Look for common import/include patterns
   const includeRegex = /#include\s+[<"]([^>"]+)[>"]/g;
   let match;
 
@@ -2983,46 +3052,47 @@ function extractGenericDependencies(
   }
 }
 
-/**
- * Build dependency graph from file analysis data
- */
 async function buildDependencyGraph(
   files: FileAnalysisData[]
 ): Promise<DependencyNode[]> {
-
-  
+  const logger = getLogger();
   const nodes: DependencyNode[] = [];
   const fileMap = new Map<string, FileAnalysisData>();
 
-  // Create file map for quick lookup
   files.forEach((file) => {
     fileMap.set(file.file, file);
+    const normalized = path.normalize(file.file);
+    fileMap.set(normalized, file);
   });
 
-  // Build dependency nodes
+  logger.info(`Building dependency graph for ${files.length} files`);
+
   for (const file of files) {
     const dependencies: string[] = [];
     const dependents: string[] = [];
 
-    // Find internal dependencies
     if (file.dependencies) {
+      logger.debug(`Processing ${file.file}: ${file.dependencies.internal_imports.length} internal imports`);
+      
       for (const internalImport of file.dependencies.internal_imports) {
-        // Resolve relative paths
-        const resolvedPath = resolveImportPath(internalImport, file.file);
+        const resolvedPath = resolveImportPath(internalImport, file.file, fileMap);
         
-        if (fileMap.has(resolvedPath)) {
+        if (resolvedPath && fileMap.has(resolvedPath)) {
           dependencies.push(resolvedPath);
+          logger.debug(`  ✓ Resolved: ${internalImport} -> ${resolvedPath}`);
+        } else {
+          logger.debug(`  ✗ Unresolved: ${internalImport} (tried: ${resolvedPath})`);
         }
       }
     }
 
-    // Find dependents (files that import this file)
     for (const otherFile of files) {
       if (otherFile.file !== file.file && otherFile.dependencies) {
         for (const internalImport of otherFile.dependencies.internal_imports) {
           const resolvedPath = resolveImportPath(
             internalImport,
-            otherFile.file
+            otherFile.file,
+            fileMap
           );
           if (resolvedPath === file.file) {
             dependents.push(otherFile.file);
@@ -3037,63 +3107,67 @@ async function buildDependencyGraph(
       dependents,
       exports: file.exported_symbols || [],
       imports: file.imported_symbols || [],
-      dead_exports: [], // Will be populated by dead code analysis
+      dead_exports: [],
     });
   }
 
   const nodesWithDeps = nodes.filter(n => n.dependencies.length > 0 || n.dependents.length > 0);
-
+  logger.info(`Dependency graph: ${nodes.length} nodes, ${nodesWithDeps.length} with dependencies`);
 
   return nodes;
 }
 
-function resolveImportPath(importPath: string, fromFile: string): string {
-  if (importPath.startsWith('.')) {
-    const fromDir = path.dirname(fromFile);
-    let resolved = path.resolve(fromDir, importPath);
-    
-    // Handle TypeScript imports that use .js extensions but point to .ts files
-    if (importPath.endsWith('.js')) {
-      // Replace .js with .ts for TypeScript source files
-      const tsPath = importPath.replace(/\.js$/, '.ts');
-      resolved = path.resolve(fromDir, tsPath);
-    }
-    
-    const relativePath = path.relative(process.cwd(), resolved);
-    
-    // Try different extensions if the exact file doesn't exist
-    const extensions = ['.ts', '.tsx', '.js', '.jsx'];
-    
-    // First try the exact path (for .ts files)
-    if (fs.existsSync(relativePath)) {
-      return relativePath;
-    }
-    
-    // If it's a directory, try index files
-    for (const ext of extensions) {
-      const indexPath = path.join(relativePath, 'index' + ext);
-      if (fs.existsSync(indexPath)) {
-        return indexPath;
-      }
-    }
-    
-    // Try adding extensions (for imports without extensions)
-    if (!path.extname(relativePath)) {
-      for (const ext of extensions) {
-        const withExt = relativePath + ext;
-        if (fs.existsSync(withExt)) {
-          return withExt;
-        }
-      }
-    }
-    
-    return relativePath;
+function resolveImportPath(
+  importPath: string, 
+  fromFile: string,
+  fileMap: Map<string, FileAnalysisData>
+): string | null {
+  if (!importPath.startsWith('.')) {
+    return null;
   }
-  return importPath;
+
+  const fromDir = path.dirname(fromFile);
+  
+  let cleanImport = importPath;
+  if (importPath.endsWith('.js')) {
+    cleanImport = importPath.slice(0, -3);
+  }
+  
+  const basePath = path.join(fromDir, cleanImport);
+  
+  const extensions = ['', '.ts', '.tsx', '.js', '.jsx'];
+  
+  for (const ext of extensions) {
+    const candidatePath = basePath + ext;
+    
+    if (fileMap.has(candidatePath)) {
+      return candidatePath;
+    }
+    
+    const normalizedCandidate = path.normalize(candidatePath);
+    if (fileMap.has(normalizedCandidate)) {
+      return normalizedCandidate;
+    }
+  }
+  
+  const indexExtensions = ['index.ts', 'index.tsx', 'index.js', 'index.jsx'];
+  for (const indexFile of indexExtensions) {
+    const indexPath = path.join(basePath, indexFile);
+    
+    if (fileMap.has(indexPath)) {
+      return indexPath;
+    }
+    
+    const normalizedIndex = path.normalize(indexPath);
+    if (fileMap.has(normalizedIndex)) {
+      return normalizedIndex;
+    }
+  }
+  
+  return null;
 }function generateMermaidDiagram(nodes: DependencyNode[]): string {
   let diagram = 'graph TD\n\n';
 
-  // Filter nodes with actual dependencies to avoid empty diagrams
   const nodesWithDeps = nodes.filter(
     (node) => node.dependencies.length > 0 || node.dependents.length > 0
   );
@@ -3103,7 +3177,6 @@ function resolveImportPath(importPath: string, fromFile: string): string {
     return diagram;
   }
 
-  // Add nodes with better naming
   const addedNodes = new Set<string>();
   nodesWithDeps.forEach((node) => {
     const safeName = node.file.replace(/[^a-zA-Z0-9]/g, '_');
@@ -3117,12 +3190,10 @@ function resolveImportPath(importPath: string, fromFile: string): string {
 
   diagram += '\n';
 
-  // Add dependencies
   nodesWithDeps.forEach((node) => {
     const safeName = node.file.replace(/[^a-zA-Z0-9]/g, '_');
     node.dependencies.forEach((dep) => {
       const depSafeName = dep.replace(/[^a-zA-Z0-9]/g, '_');
-      // Only add if the dependency node exists
       if (addedNodes.has(depSafeName)) {
         diagram += `  ${safeName} --> ${depSafeName}\n`;
       }
@@ -3142,13 +3213,11 @@ function analyzeDeadCode(nodes: DependencyNode[]): DeadCodeAnalysis {
     circular_dependencies: [],
   };
 
-  // Find unused files (no dependents and not entry points)
   const unusedFiles = nodes.filter(
     (node) => node.dependents.length === 0 && !isEntryPoint(node.file)
   );
   analysis.unused_files = unusedFiles.map((node) => node.file);
 
-  // Find orphaned exports (exports that are never imported)
   nodes.forEach((node) => {
     const allImports = new Set<string>();
     nodes.forEach((otherNode) => {
@@ -3163,7 +3232,6 @@ function analyzeDeadCode(nodes: DependencyNode[]): DeadCodeAnalysis {
     );
   });
 
-  // Find circular dependencies
   const visited = new Set<string>();
   const recursionStack = new Set<string>();
 
@@ -3203,9 +3271,6 @@ function analyzeDeadCode(nodes: DependencyNode[]): DeadCodeAnalysis {
   return analysis;
 }
 
-/**
- * Analyze dead code from cache data
- */
 async function analyzeDeadCodeFromCache(): Promise<DeadCodeResult> {
   const cache = await loadCache();
   const analysis: DeadCodeAnalysis = {
@@ -3217,19 +3282,16 @@ async function analyzeDeadCodeFromCache(): Promise<DeadCodeResult> {
     circular_dependencies: [],
   };
 
-  // Collect all exports and imports across files
   const allExports = new Map<string, { file: string; type: string }>();
   const allImports = new Set<string>();
   const fileImports = new Map<string, string[]>();
   const fileDependencies = new Map<string, string[]>();
 
-  // First pass: collect all exports and imports
   for (const [filePath, cacheEntry] of Object.entries(cache)) {
     if (!cacheEntry.analysis?.dependencies) continue;
 
     const deps = cacheEntry.analysis.dependencies;
 
-    // Collect exports with their source file
     deps.exported_functions?.forEach((fn) => {
       allExports.set(fn, { file: filePath, type: 'function' });
     });
@@ -3240,7 +3302,6 @@ async function analyzeDeadCodeFromCache(): Promise<DeadCodeResult> {
       allExports.set(v, { file: filePath, type: 'variable' });
     });
 
-    // Collect imports
     const imports = [
       ...(deps.imported_functions || []),
       ...(deps.imported_classes || []),
@@ -3249,11 +3310,9 @@ async function analyzeDeadCodeFromCache(): Promise<DeadCodeResult> {
     imports.forEach((imp) => allImports.add(imp));
     fileImports.set(filePath, imports);
 
-    // Collect file dependencies
     fileDependencies.set(filePath, deps.internal_imports || []);
   }
 
-  // Find unused exports (orphaned)
   for (const [exportName, exportInfo] of allExports) {
     if (!allImports.has(exportName)) {
       analysis.orphaned_exports.push(
@@ -3262,13 +3321,11 @@ async function analyzeDeadCodeFromCache(): Promise<DeadCodeResult> {
     }
   }
 
-  // Find unused private functions, classes, variables
   for (const [filePath, cacheEntry] of Object.entries(cache)) {
     if (!cacheEntry.analysis?.dependencies) continue;
 
     const deps = cacheEntry.analysis.dependencies;
 
-    // Private functions that are only defined but never called
     deps.private_functions?.forEach((fn) => {
       const isUsedInFile =
         cacheEntry.analysis.content?.includes(`${fn}(`) || false;
@@ -3277,7 +3334,6 @@ async function analyzeDeadCodeFromCache(): Promise<DeadCodeResult> {
       }
     });
 
-    // Private classes that are never instantiated
     deps.private_classes?.forEach((cls) => {
       const isUsedInFile =
         cacheEntry.analysis.content?.includes(`new ${cls}`) ||
@@ -3288,7 +3344,6 @@ async function analyzeDeadCodeFromCache(): Promise<DeadCodeResult> {
       }
     });
 
-    // Private variables that are never referenced
     deps.private_variables?.forEach((v) => {
       const isUsedInFile = cacheEntry.analysis.content?.includes(v) || false;
       if (!isUsedInFile) {
@@ -3297,13 +3352,11 @@ async function analyzeDeadCodeFromCache(): Promise<DeadCodeResult> {
     });
   }
 
-  // Find unused files (files with no dependents and not entry points)
   const allFiles = Object.keys(cache);
   const referencedFiles = new Set<string>();
 
   for (const deps of fileDependencies.values()) {
     deps.forEach((dep) => {
-      // Resolve relative paths to find actual referenced files
       const resolvedPath = resolveImportPathForDeadCode(dep, allFiles);
       if (resolvedPath) {
         referencedFiles.add(resolvedPath);
@@ -3311,8 +3364,6 @@ async function analyzeDeadCodeFromCache(): Promise<DeadCodeResult> {
     });
   }
 
-  // Only consider TypeScript/JavaScript source files as potentially unused
-  // Exclude configuration, documentation, and other essential files
   for (const filePath of allFiles) {
     const isSourceFile =
       filePath.match(/\.(ts|js|tsx|jsx)$/) &&
@@ -3328,7 +3379,6 @@ async function analyzeDeadCodeFromCache(): Promise<DeadCodeResult> {
     }
   }
 
-  // Find circular dependencies
   analysis.circular_dependencies = findCircularDependencies(fileDependencies);
 
   const summary = {
@@ -3342,24 +3392,18 @@ async function analyzeDeadCodeFromCache(): Promise<DeadCodeResult> {
   return { analysis, summary };
 }
 
-/**
- * Resolve import path for dead code analysis
- */
 function resolveImportPathForDeadCode(
   importPath: string,
   allFiles: string[]
 ): string | null {
   if (importPath.startsWith('.')) {
-    // Remove .js extension if present (TypeScript convention)
     let basePath = importPath;
     if (basePath.endsWith('.js')) {
       basePath = basePath.slice(0, -3);
     }
 
-    // Try to find matching file with common extensions
     const extensions = ['.ts', '.js', '.tsx', '.jsx'];
 
-    // First try with the base path + extensions
     for (const ext of extensions) {
       const candidate = basePath + ext;
       if (allFiles.includes(candidate)) {
@@ -3367,7 +3411,6 @@ function resolveImportPathForDeadCode(
       }
     }
 
-    // Then try index files
     const indexExtensions = [
       '/index.ts',
       '/index.js',
@@ -3381,7 +3424,6 @@ function resolveImportPathForDeadCode(
       }
     }
 
-    // Finally try the original path as-is
     if (allFiles.includes(importPath)) {
       return importPath;
     }
@@ -3389,9 +3431,6 @@ function resolveImportPathForDeadCode(
   return null;
 }
 
-/**
- * Find circular dependencies in file dependency graph
- */
 function findCircularDependencies(
   fileDependencies: Map<string, string[]>
 ): string[] {
@@ -3437,9 +3476,6 @@ function findCircularDependencies(
   return cycles;
 }
 
-/**
- * Generate dependency diagram in specified format
- */
 function generateDependencyDiagram(
   nodes: DependencyNode[],
   format: string
@@ -3455,15 +3491,11 @@ function generateDependencyDiagram(
   }
 }
 
-/**
- * Generate PlantUML dependency diagram
- */
 function generatePlantUMLDiagram(nodes: DependencyNode[]): string {
   let diagram = '@startuml\n';
   diagram += '!theme plain\n';
   diagram += 'title Dependency Diagram\n\n';
 
-  // Add components
   nodes.forEach((node) => {
     const componentName = path.basename(node.file, path.extname(node.file));
     diagram += `component "${componentName}" as ${componentName.replace(/[^a-zA-Z0-9]/g, '_')}\n`;
@@ -3471,7 +3503,6 @@ function generatePlantUMLDiagram(nodes: DependencyNode[]): string {
 
   diagram += '\n';
 
-  // Add dependencies
   nodes.forEach((node) => {
     const fromName = path
       .basename(node.file, path.extname(node.file))
@@ -3488,36 +3519,67 @@ function generatePlantUMLDiagram(nodes: DependencyNode[]): string {
   return diagram;
 }
 
-/**
- * Generate Structurizr DSL dependency diagram
- */
 function generateStructurizrDiagram(nodes: DependencyNode[]): string {
   let diagram = 'workspace {\n\n';
   diagram += '    model {\n';
   diagram += '        softwareSystem = softwareSystem "Application" {\n';
 
-  // Add containers for each file
   nodes.forEach((node) => {
-    const containerName = path.basename(node.file, path.extname(node.file));
-    const safeName = containerName.replace(/[^a-zA-Z0-9]/g, '_');
-    diagram += `            ${safeName} = container "${containerName}" {\n`;
-    diagram += `                technology "${path.extname(node.file).substring(1)}"\n`;
+    const fullPath = node.file.replace(/^\.\//, '').replace(/\\/g, '/');
+    const fileName = path.basename(fullPath);
+    const isHiddenFile = fileName.startsWith('.');
+    
+    let displayName: string;
+    if (isHiddenFile && !fileName.includes('.', 1)) {
+      displayName = fullPath;
+    } else {
+      displayName = fullPath.replace(/\.[^/.]+$/, '');
+    }
+    
+    const safeName = displayName.replace(/[^a-zA-Z0-9]/g, '_') || 'unknown_file';
+    const extension = path.extname(node.file).substring(1) || 'unknown';
+    
+    diagram += `            ${safeName} = container "${displayName}" {\n`;
+    diagram += `                technology "${extension}"\n`;
     diagram += '            }\n';
   });
 
   diagram += '        }\n\n';
 
-  // Add relationships
   diagram += '        # Relationships\n';
+  const uniqueRelationships = new Set<string>();
+  
   nodes.forEach((node) => {
-    const fromName = path
-      .basename(node.file, path.extname(node.file))
-      .replace(/[^a-zA-Z0-9]/g, '_');
+    const fromPath = node.file.replace(/^\.\//, '').replace(/\\/g, '/');
+    const fromFileName = path.basename(fromPath);
+    const isFromHidden = fromFileName.startsWith('.');
+    
+    let fromDisplay: string;
+    if (isFromHidden && !fromFileName.includes('.', 1)) {
+      fromDisplay = fromPath;
+    } else {
+      fromDisplay = fromPath.replace(/\.[^/.]+$/, '');
+    }
+    const fromName = fromDisplay.replace(/[^a-zA-Z0-9]/g, '_') || 'unknown_file';
+    
     node.dependencies.forEach((dep) => {
-      const toName = path
-        .basename(dep, path.extname(dep))
-        .replace(/[^a-zA-Z0-9]/g, '_');
-      diagram += `        ${fromName} -> ${toName} "depends on"\n`;
+      const toPath = dep.replace(/^\.\//, '').replace(/\\/g, '/');
+      const toFileName = path.basename(toPath);
+      const isToHidden = toFileName.startsWith('.');
+      
+      let toDisplay: string;
+      if (isToHidden && !toFileName.includes('.', 1)) {
+        toDisplay = toPath;
+      } else {
+        toDisplay = toPath.replace(/\.[^/.]+$/, '');
+      }
+      const toName = toDisplay.replace(/[^a-zA-Z0-9]/g, '_') || 'unknown_file';
+      
+      const relationshipKey = `${fromName}->${toName}`;
+      if (!uniqueRelationships.has(relationshipKey)) {
+        uniqueRelationships.add(relationshipKey);
+        diagram += `        ${fromName} -> ${toName} "depends on"\n`;
+      }
     });
   });
 
@@ -3533,14 +3595,10 @@ function generateStructurizrDiagram(nodes: DependencyNode[]): string {
   return diagram;
 }
 
-/**
- * Check if file is an entry point
- */
 function isEntryPoint(filePath: string): boolean {
   const fileName = path.basename(filePath);
   const extension = path.extname(filePath);
 
-  // Entry point files
   const entryPoints = [
     'index.js',
     'index.ts',
@@ -3555,7 +3613,6 @@ function isEntryPoint(filePath: string): boolean {
     '__main__.py',
   ];
 
-  // Configuration files
   const configFiles = [
     'package.json',
     'package-lock.json',
@@ -3568,10 +3625,8 @@ function isEntryPoint(filePath: string): boolean {
     'config.sample.json',
   ];
 
-  // Documentation files
   const docFiles = ['README.md', 'README-PTBR.md', 'LICENSE'];
 
-  // Check patterns
   const isConfigFile =
     configFiles.includes(fileName) ||
     fileName.startsWith('.') ||
@@ -3610,10 +3665,11 @@ function isEntryPoint(filePath: string): boolean {
   );
 }
 
-function selectDeadCodePrompt(stackContext: any): string {
+function selectDeadCodePrompt(stackContext: StackContext): string {
   const primaryLanguage =
     stackContext?.stackInfo?.primary?.name?.toLowerCase() ||
-    stackContext?.summary?.primary?.toLowerCase();
+    stackContext?.summary?.primary?.toLowerCase() ||
+    '';
 
   const languagePromptMap: Record<string, string> = {
     typescript: 'analyze/dead-code-typescript',
@@ -3640,9 +3696,8 @@ function selectDeadCodePrompt(stackContext: any): string {
 
 async function analyzeDeadCodeWithLLM(): Promise<DeadCodeResult> {
   const cache = await loadCache();
-  const mcpClient = McpClient.fromConfig();
-  const stackInfo = await mcpClient.detectStack();
-  const stackContext = stackInfo as unknown as Record<string, unknown>;
+  const logger = getLogger();
+  const stackContext = await getStackContext(logger);
   const projectData = extractStructuredDataFromCache(cache);
   const config = await loadConfig();
   const promptName = selectDeadCodePrompt(stackContext);
@@ -3666,7 +3721,16 @@ async function analyzeDeadCodeWithLLM(): Promise<DeadCodeResult> {
     const validatedResponse = assertDeadCodeResponse(llmAnalysis);
     const result = convertLLMResponseToDeadCodeResult(validatedResponse);
 
+    const orphanFilesFromCache = await detectOrphanFilesFromCache();
+    
+    for (const orphanFile of orphanFilesFromCache) {
+      if (!result.analysis.unused_files.includes(orphanFile)) {
+        result.analysis.unused_files.push(orphanFile);
+        result.summary.total_unused_files++;
+      }
+    }
 
+    getLogger().info(`Dead code analysis: LLM found ${result.analysis.unused_files.length - orphanFilesFromCache.length} unused files, cache analysis found ${orphanFilesFromCache.length} additional orphan files`);
 
     return result;
   } catch (error) {
@@ -3675,13 +3739,35 @@ async function analyzeDeadCodeWithLLM(): Promise<DeadCodeResult> {
   }
 }
 
-/**
- * Extract structured data from cache for LLM analysis
- */
-function extractStructuredDataFromCache(cache: CacheData): any {
-  const project: {
-    files: any[];
-  } = {
+interface ExtractedFileData {
+  path: string;
+  size: number;
+  language: string;
+  exports: {
+    functions: string[];
+    classes: string[];
+    variables: string[];
+  };
+  imports: {
+    internal: string[];
+    external: string[];
+    functions: string[];
+    classes: string[];
+    variables: string[];
+  };
+  private: {
+    functions: string[];
+    classes: string[];
+    variables: string[];
+  };
+}
+
+interface ExtractedProjectData {
+  files: ExtractedFileData[];
+}
+
+function extractStructuredDataFromCache(cache: CacheData): ExtractedProjectData {
+  const project: ExtractedProjectData = {
     files: [],
   };
 
@@ -3730,10 +3816,9 @@ function convertLLMResponseToDeadCodeResult(
       llmAnalysis.deadCode?.unusedExports?.map(
         (e) => `${e.file}:${e.export} (${e.type})`
       ) || [],
-    circular_dependencies: [], // LLM circular dependencies removed from fullAnalysis to avoid duplication
+    circular_dependencies: [],
   };
 
-  // Extract functions, classes, variables from unused exports
   llmAnalysis.deadCode?.unusedExports?.forEach((exportItem) => {
     const identifier = `${exportItem.file}:${exportItem.export}`;
     switch (exportItem.type) {
@@ -3760,54 +3845,316 @@ function convertLLMResponseToDeadCodeResult(
   return { analysis, summary };
 }
 
-/**
- * Build enhanced dependency graph using LLM analysis data
- */
+async function detectOrphanFilesFromCache(): Promise<string[]> {
+  const cache = await loadCache();
+  const orphanFiles: string[] = [];
+  const importedFiles = new Set<string>();
+  
+  const projectInspection = await loadProjectInspection();
+  const entryPoints = projectInspection?.projectStructure?.entryPoints || ['src/index.ts'];
+  
+  const LANGUAGE_PATTERNS = {
+    typescript: { extensions: ['.ts', '.tsx'], indexFiles: ['index.ts', 'main.ts', 'app.ts'] },
+    javascript: { extensions: ['.js', '.jsx'], indexFiles: ['index.js', 'main.js', 'app.js'] },
+    
+    python: { extensions: ['.py'], indexFiles: ['__init__.py', '__main__.py', 'main.py', 'app.py'] },
+    
+    csharp: { extensions: ['.cs'], indexFiles: ['Program.cs', 'Startup.cs', 'Global.asax.cs'] },
+    
+    java: { extensions: ['.java'], indexFiles: ['Main.java', 'Application.java'] },
+    
+    ruby: { extensions: ['.rb'], indexFiles: ['main.rb', 'application.rb', 'config.ru'] },
+    
+    rust: { extensions: ['.rs'], indexFiles: ['main.rs', 'lib.rs', 'mod.rs'] },
+    
+    php: { extensions: ['.php'], indexFiles: ['index.php', 'bootstrap.php', 'autoload.php'] },
+    
+    go: { extensions: ['.go'], indexFiles: ['main.go'] }
+  };
+
+  const primaryLanguage = projectInspection?.summary?.primaryLanguage || 'typescript';
+  const languageConfig = LANGUAGE_PATTERNS[primaryLanguage as keyof typeof LANGUAGE_PATTERNS] || LANGUAGE_PATTERNS.typescript;
+
+  const FRAMEWORK_ENTRY_POINTS = [
+    'pages/', 'app/', 'routes/', 'controllers/', 'views/',
+    'config/', 'settings/', 'env/',
+    'webpack.config', 'vite.config', 'jest.config', 'babel.config',
+    'bin/', 'cli/', 'scripts/',
+    'docs/', 'README', 'LICENSE'
+  ];
+
+  const isEntryPoint = (filePath: string): boolean => {
+    if (entryPoints.some((ep: string) => filePath.includes(ep))) return true;
+    
+    if (languageConfig.indexFiles.some(idx => filePath.includes(idx))) return true;
+    
+    if (FRAMEWORK_ENTRY_POINTS.some(pattern => filePath.includes(pattern))) return true;
+    
+    const fileName = path.basename(filePath);
+    if (filePath.split('/').length <= 2 && (
+      fileName.startsWith('index.') || 
+      fileName.startsWith('main.') ||
+      fileName.startsWith('app.') ||
+      fileName.startsWith('server.')
+    )) return true;
+
+    return false;
+  };
+
+  const isConfigurationFile = (filePath: string): boolean => {
+    const configPatterns = [
+      'package.json', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
+      'Cargo.toml', 'Cargo.lock', 'pom.xml', 'build.gradle', 'Gemfile', 'Gemfile.lock',
+      'composer.json', 'composer.lock', 'go.mod', 'go.sum', 'requirements.txt', 'Pipfile',
+      'pyproject.toml', '*.csproj', 'packages.config',
+      
+      'tsconfig.json', 'eslint.config', '.eslintrc', '.prettierrc', 'jest.config',
+      'babel.config', 'webpack.config', 'vite.config', 'next.config', 'nuxt.config',
+      'tailwind.config', 'postcss.config', 'rollup.config', 'svelte.config',
+      
+      '.env', '.gitignore', '.npmignore', 'Dockerfile', 'docker-compose',
+      'vercel.json', 'netlify.toml', '.github/', '.gitlab-ci.yml',
+      
+      '*.md', 'docs/', 'LICENSE'
+    ];
+    
+    return configPatterns.some(pattern => 
+      filePath.includes(pattern) || 
+      path.basename(filePath).includes(pattern.replace('*', ''))
+    );
+  };
+
+  const isTestFile = (filePath: string): boolean => {
+    const testPatterns = [
+      '.test.', '.spec.', '__tests__/', 'test/', 'tests/', 'spec/',
+      '_test.py', '_spec.rb', '_test.go', 'Test.java', 'Tests.cs'
+    ];
+    
+    return testPatterns.some(pattern => filePath.includes(pattern));
+  };
+
+  for (const [filePath, cacheEntry] of Object.entries(cache)) {
+    if (!cacheEntry.analysis?.dependencies) continue;
+    
+    const deps = cacheEntry.analysis.dependencies;
+    if (deps.internal_imports) {
+      for (const imp of deps.internal_imports) {
+        const resolvedPaths = resolveImportPathForLanguage(imp, filePath, primaryLanguage, languageConfig);
+        resolvedPaths.forEach(resolved => importedFiles.add(resolved));
+      }
+    }
+  }
+
+  for (const [filePath, cacheEntry] of Object.entries(cache)) {
+    if (!cacheEntry.analysis?.dependencies) continue;
+    
+    const deps = cacheEntry.analysis.dependencies;
+    const hasExports = (deps.exported_functions?.length > 0) ||
+                      (deps.exported_classes?.length > 0) ||
+                      (deps.exported_variables?.length > 0);
+
+    if (hasExports) {
+      const isImported = isFileImported(filePath, importedFiles, languageConfig);
+
+      if (!isImported && 
+          !isEntryPoint(filePath) && 
+          !isConfigurationFile(filePath) && 
+          !isTestFile(filePath)) {
+        
+        orphanFiles.push(filePath);
+      }
+    }
+  }
+
+  return orphanFiles;
+}
+
+function resolveImportPathForLanguage(
+  importPath: string, 
+  fromFile: string, 
+  language: string, 
+  languageConfig: any
+): string[] {
+  const resolvedPaths: string[] = [];
+  
+  switch (language) {
+    case 'typescript':
+    case 'javascript':
+      if (importPath.startsWith('../') || importPath.startsWith('./')) {
+        const dir = path.dirname(fromFile);
+        let absolutePath = path.normalize(path.join(dir, importPath)).replace(/\\/g, '/');
+        
+        if (absolutePath.endsWith('.js')) {
+          absolutePath = absolutePath.replace('.js', '.ts');
+        }
+        
+        resolvedPaths.push(absolutePath);
+        
+        const withoutExt = absolutePath.replace(/\.(js|ts|tsx|jsx)$/, '');
+        languageConfig.extensions.forEach((ext: string) => {
+          resolvedPaths.push(withoutExt + ext);
+        });
+      }
+      break;
+      
+    case 'python':
+      if (importPath.startsWith('.')) {
+        const dir = path.dirname(fromFile);
+        const modulePath = importPath.replace(/\./g, '/') + '.py';
+        const absolutePath = path.normalize(path.join(dir, modulePath));
+        resolvedPaths.push(absolutePath);
+      } else {
+        const packagePath = importPath.replace(/\./g, '/') + '.py';
+        resolvedPaths.push(packagePath);
+      }
+      break;
+      
+    case 'java':
+      const packagePath = importPath.replace(/\./g, '/') + '.java';
+      resolvedPaths.push(packagePath);
+      break;
+      
+    case 'csharp':
+      const namespacePath = importPath.replace(/\./g, '/') + '.cs';
+      resolvedPaths.push(namespacePath);
+      break;
+      
+    case 'ruby':
+      if (importPath.startsWith('./') || importPath.startsWith('../')) {
+        const dir = path.dirname(fromFile);
+        const absolutePath = path.normalize(path.join(dir, importPath + '.rb'));
+        resolvedPaths.push(absolutePath);
+      } else {
+        resolvedPaths.push(importPath + '.rb');
+      }
+      break;
+      
+    case 'rust':
+      if (importPath.startsWith('crate::') || importPath.startsWith('super::') || importPath.startsWith('self::')) {
+        const modulePath = importPath.replace(/::/g, '/').replace('crate/', 'src/') + '.rs';
+        resolvedPaths.push(modulePath);
+      }
+      break;
+      
+    case 'php':
+      if (importPath.includes('\\')) {
+        const namespacePath = importPath.replace(/\\/g, '/') + '.php';
+        resolvedPaths.push(namespacePath);
+      } else {
+        resolvedPaths.push(importPath);
+      }
+      break;
+      
+    case 'go':
+      if (importPath.startsWith('./') || importPath.startsWith('../')) {
+        const dir = path.dirname(fromFile);
+        const absolutePath = path.normalize(path.join(dir, importPath));
+        resolvedPaths.push(absolutePath);
+      }
+      break;
+  }
+  
+  return resolvedPaths;
+}
+
+function isFileImported(filePath: string, importedFiles: Set<string>, languageConfig: LanguageConfig): boolean {
+  if (importedFiles.has(filePath)) return true;
+  
+  const withoutExt = filePath.replace(/\.\w+$/, '');
+  if (importedFiles.has(withoutExt)) return true;
+  
+  for (const ext of languageConfig.extensions) {
+    if (importedFiles.has(withoutExt + ext)) return true;
+  }
+  
+  const basename = path.basename(filePath, path.extname(filePath));
+  const dir = path.dirname(filePath);
+  
+  for (const imported of importedFiles) {
+    const importedBasename = path.basename(imported, path.extname(imported));
+    const importedDir = path.dirname(imported);
+    
+    if (importedBasename === basename && (
+      importedDir === dir || 
+      path.resolve(importedDir) === path.resolve(dir)
+    )) {
+      return true;
+    }
+  }
+  
+  return false;
+}
+
 async function buildEnhancedDependencyGraph(
   filesToProcess: FileAnalysisData[],
   deadCodeResult: DeadCodeResult
 ): Promise<DependencyNode[]> {
-  const cache = await loadCache();
+  const logger = getLogger();
   const nodes: DependencyNode[] = [];
-  const usedFiles = new Set(
-    filesToProcess
-      .filter(
-        (file) => !deadCodeResult.analysis.unused_files.includes(file.file)
-      )
-      .map((f) => f.file)
+  
+  const usedFiles = filesToProcess.filter(
+    (file) => !deadCodeResult.analysis.unused_files.includes(file.file)
   );
 
-  for (const filePath of usedFiles) {
-    const cacheEntry = cache[filePath];
-    if (!cacheEntry?.analysis?.dependencies) continue;
+  const fileMap = new Map<string, FileAnalysisData>();
+  usedFiles.forEach((file) => {
+    fileMap.set(file.file, file);
+    const normalized = path.normalize(file.file);
+    fileMap.set(normalized, file);
+  });
 
-    const deps = cacheEntry.analysis.dependencies;
+  logger.info(`Building enhanced dependency graph for ${usedFiles.length} files (excluding ${deadCodeResult.analysis.unused_files.length} unused files)`);
+
+  for (const file of usedFiles) {
     const resolvedDependencies: string[] = [];
+    const dependents: string[] = [];
 
-    // Only include dependencies to files that are not marked as unused
-    for (const dep of deps.internal_imports || []) {
-      const resolved = resolveImportPathForDeadCode(dep, Array.from(usedFiles));
-      if (resolved && usedFiles.has(resolved)) {
-        resolvedDependencies.push(resolved);
+    if (file.dependencies) {
+      logger.debug(`Processing ${file.file}: ${file.dependencies.internal_imports.length} internal imports`);
+      
+      for (const internalImport of file.dependencies.internal_imports) {
+        const resolvedPath = resolveImportPath(internalImport, file.file, fileMap);
+        
+        if (resolvedPath && fileMap.has(resolvedPath)) {
+          resolvedDependencies.push(resolvedPath);
+          logger.debug(`  ✓ Resolved: ${internalImport} -> ${resolvedPath}`);
+        } else {
+          logger.debug(`  ✗ Unresolved: ${internalImport}`);
+        }
       }
     }
 
-    // Mark node as unused if it contains only dead exports
-    const hasLiveExports = !deadCodeResult.analysis.orphaned_exports.some(
-      (export_) => export_.startsWith(filePath + ':')
-    );
+    for (const otherFile of usedFiles) {
+      if (otherFile.file !== file.file && otherFile.dependencies) {
+        for (const internalImport of otherFile.dependencies.internal_imports) {
+          const resolvedPath = resolveImportPath(
+            internalImport,
+            otherFile.file,
+            fileMap
+          );
+          if (resolvedPath === file.file) {
+            dependents.push(otherFile.file);
+          }
+        }
+      }
+    }
+
+    const deadExports = deadCodeResult.analysis.orphaned_exports
+      .filter((export_) => export_.startsWith(file.file + ':'))
+      .map((export_) => export_.split(':')[1]);
 
     nodes.push({
-      file: filePath,
+      file: file.file,
       dependencies: resolvedDependencies,
-      dependents: [], // Will be populated later if needed
-      exports: deps.exported_functions || [],
-      imports: deps.internal_imports || [],
-      dead_exports: deadCodeResult.analysis.orphaned_exports
-        .filter((export_) => export_.startsWith(filePath + ':'))
-        .map((export_) => export_.split(':')[1]),
+      dependents,
+      exports: file.exported_symbols || [],
+      imports: file.imported_symbols || [],
+      dead_exports: deadExports,
     });
   }
+
+  const nodesWithDeps = nodes.filter(n => n.dependencies.length > 0 || n.dependents.length > 0);
+  logger.info(`Enhanced dependency graph: ${nodes.length} nodes, ${nodesWithDeps.length} with dependencies, ${nodes.reduce((sum, n) => sum + n.dead_exports.length, 0)} dead exports`);
 
   return nodes;
 }

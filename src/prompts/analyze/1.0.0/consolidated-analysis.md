@@ -127,6 +127,7 @@ Detect and analyze all forms of external integrations:
 ### 8. Dependency Analysis
 - **Internal dependencies**: Internal modules/files imported
 - **External dependencies**: Third-party libraries and frameworks
+- **Dynamic imports**: Dynamic import() calls, require() calls, and string-based module references
 - **Export analysis**: What this file makes available to others
 - **Circular dependencies**: Detection and impact assessment
 - **Unused imports**: Symbols imported but never used
@@ -318,13 +319,19 @@ When dead code analysis is enabled, analyze the file content to identify:
 2. **Unused Private Classes**: Private classes that are defined but never instantiated or referenced
 3. **Unused Private Variables**: Private variables that are declared but never read or used
 4. **Unreachable Code**: Code segments that can never be executed (e.g., after return statements, in unreachable if/else branches)
+5. **Dynamic Import Detection**: Identify all forms of dynamic imports:
+   - `import('./module')` - ES6 dynamic imports
+   - `require('module')` - CommonJS requires
+   - String references that could be module names (e.g., in `loadModule('command-mapper')` calls)
+   - Conditional imports based on runtime conditions
+   - Plugin systems that load modules by name
 
 For each identified dead code item, provide:
 - **name**: The exact name of the function/class/variable
 - **line**: The line number where it's defined (if determinable)
 - **reason**: A clear explanation of why it's considered unused/unreachable
 
-**Note**: Only analyze code within the current file. Do not consider usage from other files or external references.
+**Note**: When analyzing exports, consider both static imports and potential dynamic references. A file that exports functions but has no static imports might still be used via dynamic imports or string-based module loading.
 
 ## Scoring Criteria
 
