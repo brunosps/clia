@@ -165,8 +165,30 @@ export async function execPrompt<PC, T>(
 function parseJSONResponse(response: string, context: string): any {
   const logger = getLogger();
 
-  // Log da resposta original para debugging
   logger.debug(`[${context}] Raw LLM response:`, response);
+
+  // Tentativa 0: Extrair JSON entre tags <JSON_START> e <JSON_END>
+  try {
+    const startTag = '<JSON_START>';
+    const endTag = '<JSON_END>';
+    const startIndex = response.indexOf(startTag);
+    const endIndex = response.indexOf(endTag);
+
+    if (startIndex !== -1 && endIndex !== -1 && startIndex < endIndex) {
+      const jsonContent = response
+        .substring(startIndex + startTag.length, endIndex)
+        .trim();
+      logger.debug(`[${context}] Extracted JSON from sentinels:`, jsonContent);
+      const parsed = JSON.parse(jsonContent);
+      logger.debug(`[${context}] Successfully parsed JSON from sentinels`);
+      return parsed;
+    }
+  } catch (e) {
+    logger.debug(
+      `[${context}] Sentinel extraction failed:`,
+      e instanceof Error ? e.message : e
+    );
+  }
 
   // Tentativa 1: JSON direto
   try {
