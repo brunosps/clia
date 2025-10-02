@@ -3117,54 +3117,312 @@ async function buildDependencyGraph(
   return nodes;
 }
 
-function resolveImportPath(
-  importPath: string, 
-  fromFile: string,
+function resolveTypeScriptImport(
+  importPath: string,
+  fromDir: string,
   fileMap: Map<string, FileAnalysisData>
 ): string | null {
   if (!importPath.startsWith('.')) {
     return null;
   }
 
-  const fromDir = path.dirname(fromFile);
-  
   let cleanImport = importPath;
   if (importPath.endsWith('.js')) {
     cleanImport = importPath.slice(0, -3);
   }
-  
+
   const basePath = path.join(fromDir, cleanImport);
-  
   const extensions = ['', '.ts', '.tsx', '.js', '.jsx'];
-  
+
   for (const ext of extensions) {
     const candidatePath = basePath + ext;
-    
     if (fileMap.has(candidatePath)) {
       return candidatePath;
     }
-    
     const normalizedCandidate = path.normalize(candidatePath);
     if (fileMap.has(normalizedCandidate)) {
       return normalizedCandidate;
     }
   }
-  
+
   const indexExtensions = ['index.ts', 'index.tsx', 'index.js', 'index.jsx'];
   for (const indexFile of indexExtensions) {
     const indexPath = path.join(basePath, indexFile);
-    
     if (fileMap.has(indexPath)) {
       return indexPath;
     }
-    
     const normalizedIndex = path.normalize(indexPath);
     if (fileMap.has(normalizedIndex)) {
       return normalizedIndex;
     }
   }
-  
+
   return null;
+}
+
+function resolvePythonImport(
+  importPath: string,
+  fromDir: string,
+  fileMap: Map<string, FileAnalysisData>
+): string | null {
+  if (!importPath.startsWith('.')) {
+    return null;
+  }
+
+  const moduleLevels = importPath.match(/^\.*/)![0].length;
+  const moduleName = importPath.substring(moduleLevels);
+
+  let targetDir = fromDir;
+  for (let i = 1; i < moduleLevels; i++) {
+    targetDir = path.dirname(targetDir);
+  }
+
+  const candidates = [
+    path.join(targetDir, moduleName.replace(/\./g, '/') + '.py'),
+    path.join(targetDir, moduleName.replace(/\./g, '/'), '__init__.py'),
+  ];
+
+  for (const candidate of candidates) {
+    if (fileMap.has(candidate)) {
+      return candidate;
+    }
+    const normalized = path.normalize(candidate);
+    if (fileMap.has(normalized)) {
+      return normalized;
+    }
+  }
+
+  return null;
+}
+
+function resolveJavaImport(
+  importPath: string,
+  fromDir: string,
+  fileMap: Map<string, FileAnalysisData>
+): string | null {
+  if (!importPath.includes('.')) {
+    return null;
+  }
+
+  const packagePath = importPath.replace(/\./g, '/') + '.java';
+
+  for (const [filePath] of fileMap) {
+    if (filePath.endsWith(packagePath)) {
+      return filePath;
+    }
+  }
+
+  return null;
+}
+
+function resolveCSharpImport(
+  importPath: string,
+  fromDir: string,
+  fileMap: Map<string, FileAnalysisData>
+): string | null {
+  if (!importPath.includes('.')) {
+    return null;
+  }
+
+  const namespacePath = importPath.replace(/\./g, '/') + '.cs';
+
+  for (const [filePath] of fileMap) {
+    if (filePath.endsWith(namespacePath)) {
+      return filePath;
+    }
+  }
+
+  return null;
+}
+
+function resolveRubyImport(
+  importPath: string,
+  fromDir: string,
+  fileMap: Map<string, FileAnalysisData>
+): string | null {
+  if (!importPath.startsWith('.') && !importPath.startsWith('/')) {
+    return null;
+  }
+
+  const basePath = path.isAbsolute(importPath)
+    ? importPath
+    : path.join(fromDir, importPath);
+
+  const candidates = [basePath + '.rb', path.join(basePath, 'index.rb')];
+
+  for (const candidate of candidates) {
+    if (fileMap.has(candidate)) {
+      return candidate;
+    }
+    const normalized = path.normalize(candidate);
+    if (fileMap.has(normalized)) {
+      return normalized;
+    }
+  }
+
+  return null;
+}
+
+function resolveRustImport(
+  importPath: string,
+  fromDir: string,
+  fileMap: Map<string, FileAnalysisData>
+): string | null {
+  if (
+    !importPath.startsWith('crate::') &&
+    !importPath.startsWith('super::') &&
+    !importPath.startsWith('self::')
+  ) {
+    return null;
+  }
+
+  let modulePath = importPath.replace(/::/g, '/');
+
+  if (modulePath.startsWith('crate/')) {
+    modulePath = 'src/' + modulePath.substring(6);
+  } else if (modulePath.startsWith('super/')) {
+    const parentDir = path.dirname(fromDir);
+    modulePath = path.join(parentDir, modulePath.substring(6));
+  } else if (modulePath.startsWith('self/')) {
+    modulePath = path.join(fromDir, modulePath.substring(5));
+  }
+
+  const candidates = [
+    modulePath + '.rs',
+    path.join(modulePath, 'mod.rs'),
+    path.join(modulePath, 'lib.rs'),
+  ];
+
+  for (const candidate of candidates) {
+    if (fileMap.has(candidate)) {
+      return candidate;
+    }
+    const normalized = path.normalize(candidate);
+    if (fileMap.has(normalized)) {
+      return normalized;
+    }
+  }
+
+  return null;
+}
+
+function resolvePHPImport(
+  importPath: string,
+  fromDir: string,
+  fileMap: Map<string, FileAnalysisData>
+): string | null {
+  if (!importPath.includes('\\') && !importPath.startsWith('./')) {
+    return null;
+  }
+
+  if (importPath.startsWith('./') || importPath.startsWith('../')) {
+    const absolutePath = path.join(fromDir, importPath);
+    const candidates = [absolutePath, absolutePath + '.php'];
+
+    for (const candidate of candidates) {
+      if (fileMap.has(candidate)) {
+        return candidate;
+      }
+      const normalized = path.normalize(candidate);
+      if (fileMap.has(normalized)) {
+        return normalized;
+      }
+    }
+  } else {
+    const namespacePath = importPath.replace(/\\/g, '/') + '.php';
+    for (const [filePath] of fileMap) {
+      if (filePath.endsWith(namespacePath)) {
+        return filePath;
+      }
+    }
+  }
+
+  return null;
+}
+
+function resolveGoImport(
+  importPath: string,
+  fromDir: string,
+  fileMap: Map<string, FileAnalysisData>
+): string | null {
+  if (!importPath.startsWith('.')) {
+    return null;
+  }
+
+  const basePath = path.join(fromDir, importPath);
+  const candidates = [basePath + '.go'];
+
+  for (const candidate of candidates) {
+    if (fileMap.has(candidate)) {
+      return candidate;
+    }
+    const normalized = path.normalize(candidate);
+    if (fileMap.has(normalized)) {
+      return normalized;
+    }
+  }
+
+  for (const [filePath] of fileMap) {
+    if (
+      filePath.startsWith(basePath) &&
+      filePath.endsWith('.go') &&
+      path.dirname(filePath) === basePath
+    ) {
+      return filePath;
+    }
+  }
+
+  return null;
+}
+
+function detectLanguageFromFile(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  const extMap: Record<string, string> = {
+    '.ts': 'typescript',
+    '.tsx': 'typescript',
+    '.js': 'javascript',
+    '.jsx': 'javascript',
+    '.py': 'python',
+    '.java': 'java',
+    '.cs': 'csharp',
+    '.rb': 'ruby',
+    '.rs': 'rust',
+    '.php': 'php',
+    '.go': 'go',
+    '.golang': 'go',
+  };
+  return extMap[ext] || 'unknown';
+}
+
+function resolveImportPath(
+  importPath: string,
+  fromFile: string,
+  fileMap: Map<string, FileAnalysisData>
+): string | null {
+  const language = detectLanguageFromFile(fromFile);
+  const fromDir = path.dirname(fromFile);
+
+  switch (language) {
+    case 'typescript':
+    case 'javascript':
+      return resolveTypeScriptImport(importPath, fromDir, fileMap);
+    case 'python':
+      return resolvePythonImport(importPath, fromDir, fileMap);
+    case 'java':
+      return resolveJavaImport(importPath, fromDir, fileMap);
+    case 'csharp':
+      return resolveCSharpImport(importPath, fromDir, fileMap);
+    case 'ruby':
+      return resolveRubyImport(importPath, fromDir, fileMap);
+    case 'rust':
+      return resolveRustImport(importPath, fromDir, fileMap);
+    case 'php':
+      return resolvePHPImport(importPath, fromDir, fileMap);
+    case 'go':
+      return resolveGoImport(importPath, fromDir, fileMap);
+    default:
+      return null;
+  }
 }function generateMermaidDiagram(nodes: DependencyNode[]): string {
   let diagram = 'graph TD\n\n';
 

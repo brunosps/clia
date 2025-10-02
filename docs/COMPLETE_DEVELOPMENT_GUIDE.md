@@ -66,7 +66,19 @@ Quando ativada, analisa o cache `.clia/analyze-cache.json` para identificar:
 - **Dependências circulares**: Ciclos no grafo de dependências entre arquivos
 
 #### Diagramas de Dependência (--dependency-graph)
-Gera visualizações do grafo de dependências em três formatos:
+Gera visualizações do grafo de dependências em três formatos com **suporte a 9 linguagens**:
+
+**Linguagens Suportadas**:
+- **TypeScript/JavaScript**: Resolução de imports relativos (`.js`, `.ts`, `.tsx`, `.jsx`), index files, e conversão `.js` → `.ts`
+- **Python**: Imports relativos (`.`, `..`), módulos (`__init__.py`), e packages
+- **Java**: Resolução de packages (`com.example.Class` → `com/example/Class.java`)
+- **C#**: Namespaces (`System.Collections` → `System/Collections.cs`)
+- **Ruby**: Requires relativos e absolutos (`.rb`), index files
+- **Rust**: Módulos `crate::`, `super::`, `self::`, `mod.rs`, `lib.rs`
+- **PHP**: Namespaces (`App\Models\User` → `App/Models/User.php`) e requires relativos
+- **Go**: Imports relativos e packages do mesmo diretório
+
+**Formatos de Saída**:
 
 **Mermaid** (padrão):
 ```mermaid
@@ -102,6 +114,12 @@ workspace {
     }
 }
 ```
+
+**Características dos Diagramas**:
+- ✅ **Nomes únicos**: Inclui caminho completo (`src_commands_inspect` vs `src_stack_index`)
+- ✅ **Arquivos ocultos**: Tratamento correto (`.prettierrc` → `_prettierrc`)
+- ✅ **Deduplicação**: Relacionamentos únicos (sem duplicatas)
+- ✅ **Multi-linguagem**: Resolução de imports específica por linguagem
 
 #### Saídas Geradas
 - **JSON**: `.clia/reports/{timestamp}_analyze.json` - Dados estruturados completos
@@ -305,6 +323,75 @@ workspace {
 - Detecta linguagens, frameworks, gerenciadores de pacotes, ferramentas de linting
 - Recomendações AI para ferramentas e modernização
 - Integração com workflows de segurança e insight
+
+### Resolução de Imports Multi-Linguagem (`src/commands/analyze.ts`)
+Sistema especializado de resolução de imports com suporte para 9 linguagens de programação:
+
+#### Funções Especializadas por Linguagem
+- **`resolveTypeScriptImport()`**: TypeScript/JavaScript
+  - Imports relativos: `./config.js`, `../utils.ts`
+  - Conversão `.js` → `.ts` para compatibilidade ESM
+  - Extensões tentadas: `''`, `.ts`, `.tsx`, `.js`, `.jsx`
+  - Index files: `index.ts`, `index.tsx`, `index.js`, `index.jsx`
+  
+- **`resolvePythonImport()`**: Python
+  - Imports relativos: `.module`, `..package.module`
+  - Resolução de níveis: contagem de pontos para navegação de diretórios
+  - Candidates: `module.py`, `module/__init__.py`
+
+- **`resolveJavaImport()`**: Java
+  - Packages: `com.example.Class` → `com/example/Class.java`
+  - Busca em todo o fileMap por correspondência de suffix
+  
+- **`resolveCSharpImport()`**: C#
+  - Namespaces: `System.Collections` → `System/Collections.cs`
+  - Busca em todo o fileMap por correspondência de suffix
+
+- **`resolveRubyImport()`**: Ruby
+  - Requires relativos: `./lib/utils`, `../config`
+  - Extensões: `.rb`, index files `index.rb`
+
+- **`resolveRustImport()`**: Rust
+  - Módulos: `crate::module`, `super::sibling`, `self::child`
+  - Arquivos: `.rs`, `mod.rs`, `lib.rs`
+  - Conversão `::` → `/` para paths
+
+- **`resolvePHPImport()`**: PHP
+  - Namespaces: `App\Models\User` → `App/Models/User.php`
+  - Requires relativos: `./config.php`, `../utils.php`
+  - Conversão `\\` → `/` para paths
+
+- **`resolveGoImport()`**: Go
+  - Imports relativos: `./package`, `../utils`
+  - Múltiplos arquivos `.go` no mesmo package
+
+#### Arquitetura de Resolução
+```typescript
+function resolveImportPath(
+  importPath: string,
+  fromFile: string,
+  fileMap: Map<string, FileAnalysisData>
+): string | null {
+  const language = detectLanguageFromFile(fromFile);
+  const fromDir = path.dirname(fromFile);
+
+  switch (language) {
+    case 'typescript':
+    case 'javascript':
+      return resolveTypeScriptImport(importPath, fromDir, fileMap);
+    case 'python':
+      return resolvePythonImport(importPath, fromDir, fileMap);
+    // ... outras linguagens
+  }
+}
+```
+
+**Características**:
+- ✅ **Detecção automática**: Linguagem detectada pela extensão do arquivo
+- ✅ **Normalização de paths**: `path.normalize()` para compatibilidade cross-platform
+- ✅ **fileMap lookup**: Busca eficiente em memória (sem `fs.existsSync`)
+- ✅ **Fallback seguro**: Retorna `null` se resolução falhar
+- ✅ **Zero hardcoding**: Cada linguagem tem sua própria função especializada
 
 ### Padrões de Arquivos Essenciais
 - Diretório de saída: `.clia/` para patches, specs, planos, insights
