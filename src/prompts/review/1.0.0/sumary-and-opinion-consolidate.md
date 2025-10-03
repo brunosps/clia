@@ -79,12 +79,35 @@
       </reject>
     </decision_criteria>
 
+    <input_explanation>
+      You will receive a variable called "groupReviews" containing a JSON array (as a string) with group-level review results.
+      
+      CRITICAL: The groupReviews variable contains JSON text. You MUST parse it as JSON first.
+      
+      Each group object in the parsed JSON array has these properties:
+      - group_name: string - Functional group identifier
+      - files_in_group: string[] - Array of file paths in this group
+      - group_purpose: string - Description of what this group does
+      - consolidated_scores: object
+        * security_score: number (1-10)
+        * code_quality_score: number (1-10)
+        * maintainability_score: number (1-10)
+        * overall_score: number (1-10)
+      - group_issues: object
+        * architectural_concerns: string[]
+        * integration_risks: string[]
+        * consistency_issues: string[]
+      - group_recommendations: string[]
+      - group_risk_level: 'low' | 'medium' | 'high'
+    </input_explanation>
+
     <methodology>
-      <phase name="group_synthesis">Consolidate insights from all group analyses</phase>
-      <phase name="risk_assessment">Evaluate overall risk profile and impact</phase>
+      <phase name="parse_input">Parse the groupReviews JSON string into an array of objects</phase>
+      <phase name="group_synthesis">Consolidate insights from all parsed group analyses</phase>
+      <phase name="risk_assessment">Evaluate overall risk profile and impact from actual data</phase>
       <phase name="business_alignment">Assess business value and strategic fit</phase>
-      <phase name="decision_formulation">Formulate recommendation with detailed rationale</phase>
-      <phase name="action_planning">Define required changes and next steps</phase>
+      <phase name="decision_formulation">Formulate recommendation with detailed rationale based on parsed data</phase>
+      <phase name="action_planning">Define required changes and next steps from actual issues found</phase>
     </methodology>
   </system>
 
@@ -97,31 +120,26 @@
     - Total Files: {{totalFiles}}
     - Timestamp: {{timestamp}}
 
-    **Group Review Results:**
-    {{#each groupReviews}}
-    ### Group: {{group_name}}
-    - **Files**: {{#each files_in_group}}{{this}}, {{/each}}
-    - **Purpose**: {{group_purpose}}
-    - **Scores**: Security={{consolidated_scores.security_score}}, Quality={{consolidated_scores.code_quality_score}}, Maintainability={{consolidated_scores.maintainability_score}}, Overall={{consolidated_scores.overall_score}}
-    - **Risk Level**: {{group_risk_level}}
-    - **Issues**:
-      - Architectural: {{#each group_issues.architectural_concerns}}{{this}}; {{/each}}
-      - Integration: {{#each group_issues.integration_risks}}{{this}}; {{/each}}
-      - Consistency: {{#each group_issues.consistency_issues}}{{this}}; {{/each}}
-    - **Recommendations**: {{#each group_recommendations}}{{this}}; {{/each}}
-
-    {{/each}}
+    **Group Review Results (JSON format - parse this first):**
+    {{groupReviews}}
 
     **Technology Stack:**
     {{stackContext}}
 
+    CRITICAL INSTRUCTIONS:
+    1. FIRST, parse the groupReviews JSON string above into an array
+    2. Extract total_groups as the length of the parsed array
+    3. Calculate consolidated metrics from ACTUAL scores in parsed data
+    4. Identify REAL issues from the parsed group_issues
+    5. Base your decision on ACTUAL data, not invented scenarios
+
     Please provide the final executive decision including:
-    1. **Overall Assessment**: High-level summary of intention and approach quality
-    2. **Consolidated Metrics**: Aggregate quality scores across all groups
-    3. **Risk Analysis**: Critical risks, blockers, and areas requiring attention
-    4. **Final Decision**: Approve, request changes, or reject with detailed rationale
-    5. **Action Plan**: Required changes, improvements, and next steps
-    6. **Strategic Impact**: How this change aligns with technology strategy
+    1. **Overall Assessment**: High-level summary based on PARSED group data
+    2. **Consolidated Metrics**: Aggregate quality scores from ACTUAL parsed scores
+    3. **Risk Analysis**: Critical risks from ACTUAL parsed group_issues
+    4. **Final Decision**: Approve, request changes, or reject based on REAL data
+    5. **Action Plan**: Required changes from ACTUAL parsed group_recommendations
+    6. **Strategic Impact**: Based on ACTUAL group purposes and concerns
 
     This is the definitive review decision that will guide the development team.
   </user>
@@ -223,11 +241,18 @@
   </output_schema>
 
   <finalization>
-    <rule>Provide definitive executive-level code review decision</rule>
-    <rule>Justify decision with comprehensive business and technical rationale</rule>
-    <rule>Include specific, actionable next steps for development team</rule>
-    <rule>Ensure decision aligns with business objectives and technical standards</rule>
-    <rule>Return ONLY valid JSON matching the schema</rule>
-    <rule>Respond in specified language: {{userLanguage}}</rule>
+    <rule priority="CRITICAL">PARSE the groupReviews JSON string before analyzing - this is not optional</rule>
+    <rule priority="CRITICAL">Return ONLY valid JSON matching the schema - NO markdown, NO code blocks, NO explanations</rule>
+    <rule priority="CRITICAL">Use {{userLanguage}} for all text content</rule>
+    <rule priority="CRITICAL">total_groups must equal the length of the parsed groupReviews array</rule>
+    <rule priority="HIGH">consolidated_metrics must be calculated from ACTUAL parsed group scores, not invented</rule>
+    <rule priority="HIGH">risk_analysis must list ACTUAL issues from parsed group_issues, not generic statements</rule>
+    <rule priority="HIGH">required_changes must come from ACTUAL parsed group_recommendations</rule>
+    <rule priority="HIGH">Decision rationale must reference SPECIFIC parsed data: group names, actual scores, real issues</rule>
+    <rule priority="MEDIUM">Calculate overall_security_score as average of all groups' security_scores from parsed data</rule>
+    <rule priority="MEDIUM">Calculate overall_code_quality_score as average of all groups' code_quality_scores from parsed data</rule>
+    <rule priority="MEDIUM">Calculate overall_maintainability_score as average of all groups' maintainability_scores from parsed data</rule>
+    <rule priority="MEDIUM">Calculate final_score as weighted average: (overall_security * 0.35) + (overall_quality * 0.35) + (overall_maintainability * 0.30)</rule>
+    <rule priority="LOW">If groupReviews is empty or unparseable, note this in the rationale and explain the limitation</rule>
   </finalization>
 </prompt>
