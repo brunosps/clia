@@ -326,6 +326,7 @@ async function executeCommits(
     }
 
     logger.info(`Successfully committed ${finalCommits.length} commit${finalCommits.length > 1 ? 's' : ''}`);
+    console.log(`\nCommit completed successfully! ${finalCommits.length} commit${finalCommits.length > 1 ? 's' : ''} created.`);
   }
 
   return finalCommits;
