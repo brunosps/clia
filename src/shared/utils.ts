@@ -2,13 +2,13 @@ import { loadConfig } from '../config.js';
 import { LLMTier } from '../llm/hierarchy.js';
 import { makeLLMForTier } from '../llm/provider.js';
 import { getLogger } from './logger.js';
-import { PromptTemplateEngine } from './prompt-template-engine.js';
+import { PromptTemplateEngine, PromptVariables } from './prompt-template-engine.js';
 
 export async function sleep(seg: number) {
   return new Promise((resolve) => setTimeout(resolve, seg * 1000));
 }
 
-export async function execPrompt<PC, T>(
+export async function execPrompt<PC extends PromptVariables, T>(
   promptName: string,
   promptContext: PC,
   promptVersion: string,

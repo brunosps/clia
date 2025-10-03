@@ -7,7 +7,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export interface PromptVariables {
-  [key: string]: any; // Permitir objetos complexos
+  [key: string]: unknown;
 }
 
 export interface PromptTemplate {
@@ -88,15 +88,16 @@ export class PromptTemplateEngine {
 
     // Substituir variáveis no formato {$variableName} (formato original)
     for (const [key, value] of Object.entries(variables)) {
-      if (value !== undefined) {
+      if (value !== undefined && value !== null) {
         const placeholder = `{$${key}}`;
-        processedContent = processedContent.replaceAll(placeholder, value);
+        const stringValue = this.valueToString(value);
+        processedContent = processedContent.replaceAll(placeholder, stringValue);
       }
     }
 
     // Substituir variáveis no formato {{variableName}} (formato Handlebars/Mustache)
     for (const [key, value] of Object.entries(variables)) {
-      if (value !== undefined) {
+      if (value !== undefined && value !== null) {
         const placeholder = `{{${key}}}`;
         processedContent = processedContent.replaceAll(
           placeholder,
@@ -107,8 +108,9 @@ export class PromptTemplateEngine {
 
     // Suportar acesso a propriedades aninhadas como {{input.question}}
     for (const [key, value] of Object.entries(variables)) {
-      if (value !== undefined && typeof value === 'object') {
-        for (const [subKey, subValue] of Object.entries(value as any)) {
+      if (value !== undefined && typeof value === 'object' && value !== null && !Array.isArray(value)) {
+        const objValue = value as Record<string, unknown>;
+        for (const [subKey, subValue] of Object.entries(objValue)) {
           if (subValue !== undefined) {
             const placeholder = `{{${key}.${subKey}}}`;
             processedContent = processedContent.replaceAll(
@@ -149,7 +151,7 @@ export class PromptTemplateEngine {
     return this.cleanupTemplate(processedContent);
   }
 
-  private static valueToString(value: any): string {
+  private static valueToString(value: unknown): string {
     if (value === null || value === undefined) {
       return '';
     }
@@ -173,7 +175,7 @@ export class PromptTemplateEngine {
    */
   static renderPrompt(
     promptName: string,
-    variables: any,
+    variables: PromptVariables,
     version: string = '1.0.0'
   ): string {
     const rawPrompt = this.loadPrompt(promptName, version);
