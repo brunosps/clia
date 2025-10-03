@@ -33,7 +33,7 @@ Cada comando possui prompts especializados para diferentes contextos e modos de 
 ## Comandos Disponíveis - Documentação Oficial
 
 ### comando `analyze`
-**Descrição**: 📊 Análise abrangente de qualidade de código e segurança com processamento batch dinâmico
+**Descrição**: Code quality and security analysis with dead code detection v1.0.0
 **Uso**: `clia analyze [caminhos...]`
 **Alias**: `analyse`
 **Argumentos**:
@@ -616,9 +616,20 @@ Git Diff → FileChange[] → collectContexts() → executeReview()
 ## Principais Workflows
 
 ### Comando Analyze (`src/commands/analyze.ts`)
-- Gera patches diff unificados que aplicam via `git apply --index`
-- Fallback para salvar patch em `.clia/patch.diff` se aplicação falhar
-- Sempre inclui staging git (`--index`) para workflow limpo
+**Implementação v1.0.0**:
+- **Zero comentários**: Código limpo sem comentários inline
+- **Tipagem completa**: Todas as interfaces e tipos explícitos (zero `any`)
+- **Logger estruturado**:
+  - `logger.info()` para informações de progresso
+  - `logger.warn()` para avisos não-críticos
+  - `logger.error()` apenas na função principal com emoji ❌ seguido de `console.log()`
+  - `throw new Error()` nas funções auxiliares
+- **execPrompt**:
+  - Temperatura 0.3 para análise assertiva (consolidated-analysis, dead-code)
+  - Retries: 3 tentativas para garantir robustez
+- **Interface LanguageConfig**: Tipagem explícita para configurações de linguagem com propriedade `extensions: string[]`
+
+**Funcionalidade**: Gera patches diff unificados que aplicam via `git apply --index`. Fallback para salvar patch em `.clia/patch.diff` se aplicação falhar. Sempre inclui staging git (`--index`) para workflow limpo.
 
 ### Análise Estratégica (`src/commands/inspect.ts`)
 - **Metodologia Design Thinking** com planejamento estratégico de 3 horizontes

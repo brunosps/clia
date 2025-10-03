@@ -39,6 +39,11 @@ interface AnalyzeOptions {
   deadCode?: boolean;
 }
 
+interface LanguageConfig {
+  extensions: string[];
+  [key: string]: unknown;
+}
+
 interface ProjectInspection {
   summary: {
     primaryLanguage: string;
@@ -102,7 +107,7 @@ export function registerAnalyzeCommand(program: Command): void {
   program
     .command('analyze [paths...]')
     .alias('analyse')
-    .description('Comprehensive code quality and security analysis v1.0.0 with dead code detection and dependency mapping')
+    .description('Code quality and security analysis with dead code detection v1.0.0')
     .option('-o, --output <path>', 'Output directory for reports')
     .option('--include-tests', 'Include test files in analysis')
     .option('--format <format>', 'Output format: json, markdown, both', 'both')
@@ -117,6 +122,7 @@ export function registerAnalyzeCommand(program: Command): void {
     )
     .option('--output-language <lang>', 'Output language for reports')
     .action(async (paths: string[], options: AnalyzeOptions) => {
+      const logger = getLogger();
       try {
         await runAnalyze({
           ...options,
@@ -124,7 +130,9 @@ export function registerAnalyzeCommand(program: Command): void {
         });
         process.exit(0);
       } catch (error) {
-        getLogger().error('Analysis command failed:', error);
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        await logger.error(`❌ Analysis command failed: ${errorMessage}`);
+        console.log(`❌ Analysis command failed: ${errorMessage}`);
         process.exit(1);
       }
     });
@@ -727,7 +735,7 @@ async function loadProjectInspection(): Promise<ProjectInspection | null> {
 function getExcludePaths(
   inspection: ProjectInspection | null,
   configExcludes: string[] = [],
-  config?: any
+  config?: Config
 ): string[] {
   const systemExcludes = mergeExcludes(config || {}, null);
 
@@ -1215,7 +1223,8 @@ async function runAnalyze(options: AnalyzeOptions): Promise<void> {
 
           await updateCacheWithFileAnalysis(file.file, analysis, config);
         } catch (error) {
-          logger.error(`Failed to analyze file ${file.file}:`, error);
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          throw new Error(`Failed to analyze file ${file.file}: ${errorMessage}`);
         }
       }
     }
@@ -1238,7 +1247,9 @@ async function runAnalyze(options: AnalyzeOptions): Promise<void> {
 
     console.log('Analysis completed successfully');
   } catch (error) {
-    logger.error('Analysis failed:', error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await logger.error(`❌ Analysis failed: ${errorMessage}`);
+    console.log(`❌ Analysis failed: ${errorMessage}`);
     throw error;
   }
 }
@@ -1622,7 +1633,7 @@ async function collectContexts(files: FileAnalysisData[], config: Config) {
 async function saveAnalysisResults(
   result: AnalysisResult,
   options: AnalyzeOptions,
-  config: any
+  config: Config
 ) {
   const cliaDir = path.join(process.cwd(), '.clia');
   const reportsDir = path.join(cliaDir, 'reports');
@@ -4231,7 +4242,7 @@ function resolveImportPathForLanguage(
   importPath: string, 
   fromFile: string, 
   language: string, 
-  languageConfig: any
+  languageConfig: LanguageConfig
 ): string[] {
   const resolvedPaths: string[] = [];
   
