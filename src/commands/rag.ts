@@ -47,11 +47,89 @@ interface RagStats {
   hasEmbeddings: boolean;
 }
 
+interface ProjectInspectionData {
+  summary?: {
+    totalFiles?: number;
+    [key: string]: unknown;
+  };
+  ragOptimization?: {
+    directoryStructure?: {
+      includePaths?: string[];
+      excludePaths?: string[];
+    };
+    documentationFiles?: {
+      discoveredPaths?: string[];
+      recommendedPaths?: string[];
+      recommendedChunkSize?: number;
+      recommendedChunkOverlap?: number;
+      chunkingStrategy?: string;
+    };
+    recommendedIndexingConfig?: {
+      chunkSize?: number;
+      chunkOverlap?: number;
+    };
+    priorityFiles?: string[];
+    filePatterns?: {
+      exclude?: string[];
+    };
+  };
+  structure?: {
+    directories?: string[];
+    sourceFiles?: string[];
+  };
+}
+
+interface MergedRagConfig {
+  includes: string[];
+  excludes: string[];
+  chunkSize: number;
+  chunkOverlap: number;
+  documentationConfig?: {
+    chunkSize: number;
+    chunkOverlap: number;
+    strategy: string;
+    patterns: string[];
+  };
+  priorityFiles?: string[];
+}
+
+interface EnhancedResult {
+  content: string;
+  score: number;
+  source: string;
+  relevanceFactors: string[];
+  metadata: Record<string, unknown>;
+}
+
+interface EnhancedResponse {
+  retrievalStrategy: string;
+  results: EnhancedResult[];
+  totalFound: number;
+  averageScore: number;
+  qualityMetrics: {
+    confidenceLevel: string;
+    diversityScore: number;
+  };
+}
+
+interface EnhancedQueryParams {
+  query: string;
+  changedFiles: string[];
+  k: number;
+  embedder: Embeddings;
+  useHybrid: boolean;
+  useQueryExpansion: boolean;
+  useReranking: boolean;
+  minSimilarity: number;
+  contextWindow: number;
+}
+
+
 export function ragCommand(): Command {
   const cmd = new Command('rag');
 
   cmd.description(
-    'Intelligent document indexing and semantic search system with smart chunking and embeddings'
+    'Document indexing and semantic search with smart chunking v1.0.0'
   );
 
   cmd
@@ -68,8 +146,8 @@ export function ragCommand(): Command {
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
-        logger.error(`Index operation failed: ${errorMessage}`);
-        console.log(`Index operation failed: ${errorMessage}`);
+        logger.error(`❌ Index operation failed: ${errorMessage}`);
+        console.log(`❌ Index operation failed: ${errorMessage}`);
         process.exit(1);
       }
     });
@@ -108,8 +186,8 @@ export function ragCommand(): Command {
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
-        logger.error(`Query operation failed: ${errorMessage}`);
-        console.log(`Query operation failed: ${errorMessage}`);
+        logger.error(`❌ Query operation failed: ${errorMessage}`);
+        console.log(`❌ Query operation failed: ${errorMessage}`);
         process.exit(1);
       }
     });
@@ -125,8 +203,8 @@ export function ragCommand(): Command {
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
-        logger.error(`Stats operation failed: ${errorMessage}`);
-        console.log(`Stats operation failed: ${errorMessage}`);
+        logger.error(`❌ Stats operation failed: ${errorMessage}`);
+        console.log(`❌ Stats operation failed: ${errorMessage}`);
         process.exit(1);
       }
     });
@@ -142,8 +220,8 @@ export function ragCommand(): Command {
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
-        logger.error(`Clear operation failed: ${errorMessage}`);
-        console.log(`Clear operation failed: ${errorMessage}`);
+        logger.error(`❌ Clear operation failed: ${errorMessage}`);
+        console.log(`❌ Clear operation failed: ${errorMessage}`);
         process.exit(1);
       }
     });
@@ -283,18 +361,18 @@ async function processStatsOperation(options: RagOptions): Promise<void> {
     hasEmbeddings: fs.existsSync(path.join(ragDir, 'hnswlib', 'index.dat')),
   };
 
-  console.log('\n📊 RAG System Statistics');
+  console.log('\nRAG System Statistics');
   console.log('='.repeat(50));
-  console.log(`📄 Documents: ${stats.totalDocs}`);
-  console.log(`🧩 Chunks: ${stats.totalChunks}`);
-  console.log(`🤖 Model: ${stats.embeddingModel}`);
-  console.log(`📐 Chunk Size: ${stats.chunkSize}`);
-  console.log(`🔗 Overlap: ${stats.chunkOverlap}`);
-  console.log(`💾 Index Size: ${stats.indexSizeMB.toFixed(2)} MB`);
+  console.log(`Documents: ${stats.totalDocs}`);
+  console.log(`Chunks: ${stats.totalChunks}`);
+  console.log(`Model: ${stats.embeddingModel}`);
+  console.log(`Chunk Size: ${stats.chunkSize}`);
+  console.log(`Overlap: ${stats.chunkOverlap}`);
+  console.log(`Index Size: ${stats.indexSizeMB.toFixed(2)} MB`);
   console.log(
-    `🎯 Embeddings: ${stats.hasEmbeddings ? 'Available' : 'Not Available'}`
+    `Embeddings: ${stats.hasEmbeddings ? 'Available' : 'Not Available'}`
   );
-  console.log(`📅 Last Updated: ${new Date(stats.createdAt).toLocaleString()}`);
+  console.log(`Last Updated: ${new Date(stats.createdAt).toLocaleString()}`);
 
   if (options.detailed) {
     console.log('\nDetailed Information');
@@ -343,7 +421,7 @@ async function processClearOperation(options: RagOptions): Promise<void> {
   logger.info('RAG index cleared successfully');
 }
 
-function loadProjectInspectionConfig(): Record<string, unknown> | null {
+function loadProjectInspectionConfig(): ProjectInspectionData | null {
   const inspectionPath = path.join(
     process.cwd(),
     '.clia',
@@ -356,20 +434,16 @@ function loadProjectInspectionConfig(): Record<string, unknown> | null {
 
   try {
     const content = fs.readFileSync(inspectionPath, 'utf-8');
-    const data = JSON.parse(content);
+    const data = JSON.parse(content) as ProjectInspectionData;
 
     const logger = getLogger();
     logger.info(
-      `Loaded project inspection: ${(data as Record<string, unknown>)?.summary ? ((data as Record<string, unknown>).summary as Record<string, unknown>)?.totalFiles || 'unknown' : 'unknown'} files detected`
+      `Loaded project inspection: ${data?.summary?.totalFiles || 'unknown'} files detected`
     );
 
-    const ragOpt = (data as Record<string, unknown>)?.ragOptimization as Record<
-      string,
-      unknown
-    >;
+    const ragOpt = data?.ragOptimization;
     if (ragOpt?.directoryStructure) {
-      const dirStruct = ragOpt.directoryStructure as Record<string, unknown>;
-      const includePaths = dirStruct.includePaths as string[];
+      const includePaths = ragOpt.directoryStructure.includePaths;
       if (includePaths) {
         logger.info(
           `Using inspect-optimized paths: ${includePaths.join(', ')}`
@@ -378,8 +452,7 @@ function loadProjectInspectionConfig(): Record<string, unknown> | null {
     }
 
     if (ragOpt?.documentationFiles) {
-      const docFiles = ragOpt.documentationFiles as Record<string, unknown>;
-      const discoveredPaths = docFiles.discoveredPaths as string[];
+      const discoveredPaths = ragOpt.documentationFiles.discoveredPaths;
       if (discoveredPaths && discoveredPaths.length > 0) {
         logger.info(
           `Found ${discoveredPaths.length} documentation files to index`
@@ -387,13 +460,9 @@ function loadProjectInspectionConfig(): Record<string, unknown> | null {
       }
     }
 
-    const structure = (data as Record<string, unknown>)?.structure as Record<
-      string,
-      unknown
-    >;
+    const structure = data?.structure;
     if (structure?.directories) {
-      const directories = structure.directories as string[];
-      const sourceDirs = directories.filter(
+      const sourceDirs = structure.directories.filter(
         (dir: string) =>
           dir.startsWith('src') ||
           dir.startsWith('docs') ||
@@ -436,8 +505,8 @@ function calculateIndexSize(ragDir: string): number {
 
 function mergeRagConfigurations(
   config: Config,
-  projectConfig?: Record<string, unknown> | null
-): Record<string, unknown> {
+  projectConfig?: ProjectInspectionData | null
+): MergedRagConfig {
   const defaultConfig = {
     includes: ['src/**', 'docs/**', '*.md'],
     excludes: [
@@ -455,20 +524,17 @@ function mergeRagConfigurations(
   };
 
   if (projectConfig?.ragOptimization) {
-    const ragOpt = projectConfig.ragOptimization as Record<string, unknown>;
-    const docFiles = ragOpt.documentationFiles as Record<string, unknown>;
-    const dirStruct = ragOpt.directoryStructure as Record<string, unknown>;
-    const indexConfig = ragOpt.recommendedIndexingConfig as Record<
-      string,
-      unknown
-    >;
+    const ragOpt = projectConfig.ragOptimization;
+    const docFiles = ragOpt.documentationFiles;
+    const dirStruct = ragOpt.directoryStructure;
+    const indexConfig = ragOpt.recommendedIndexingConfig;
 
-    const discoveredDocs = (docFiles?.discoveredPaths as string[]) || [];
-    const recommendedDocs = (docFiles?.recommendedPaths as string[]) || [];
+    const discoveredDocs = docFiles?.discoveredPaths || [];
+    const recommendedDocs = docFiles?.recommendedPaths || [];
     const allDocPaths = [...new Set([...discoveredDocs, ...recommendedDocs])];
 
     const includes = [
-      ...((dirStruct?.includePaths as string[]) || defaultConfig.includes),
+      ...(dirStruct?.includePaths || defaultConfig.includes),
       ...allDocPaths,
     ];
 
@@ -476,35 +542,30 @@ function mergeRagConfigurations(
       includes,
       excludes: [
         ...defaultConfig.excludes,
-        ...((dirStruct?.excludePaths as string[]) || []),
+        ...(dirStruct?.excludePaths || []),
       ],
-      chunkSize: (indexConfig?.chunkSize as number) || defaultConfig.chunkSize,
+      chunkSize: indexConfig?.chunkSize || defaultConfig.chunkSize,
       chunkOverlap:
-        (indexConfig?.chunkOverlap as number) || defaultConfig.chunkOverlap,
+        indexConfig?.chunkOverlap || defaultConfig.chunkOverlap,
       documentationConfig: {
-        chunkSize: (docFiles?.recommendedChunkSize as number) || 1200,
-        chunkOverlap: (docFiles?.recommendedChunkOverlap as number) || 200,
-        strategy: (docFiles?.chunkingStrategy as string) || 'semantic-markdown',
+        chunkSize: docFiles?.recommendedChunkSize || 1200,
+        chunkOverlap: docFiles?.recommendedChunkOverlap || 200,
+        strategy: docFiles?.chunkingStrategy || 'semantic-markdown',
         patterns: allDocPaths,
       },
     };
   }
 
-  const structure = projectConfig?.structure as Record<string, unknown>;
-  const summary = projectConfig?.summary as Record<string, unknown>;
-  const ragOpt = projectConfig?.ragOptimization as Record<string, unknown>;
+  const structure = projectConfig?.structure;
+  const summary = projectConfig?.summary;
+  const ragOpt = projectConfig?.ragOptimization;
 
   if (structure?.directories && summary) {
-    const directories = structure.directories as string[];
-    const sourceFiles = (structure.sourceFiles as string[]) || [];
-    const priorityFiles = (ragOpt?.priorityFiles as string[]) || [];
-    const filePatterns = ragOpt?.filePatterns as Record<string, unknown>;
-    const excludePatterns = (filePatterns?.exclude as string[]) || [];
-    const indexConfig = ragOpt?.recommendedIndexingConfig as Record<
-      string,
-      unknown
-    >;
-    const totalFiles = summary.totalFiles as number;
+    const directories = structure.directories;
+    const priorityFiles = ragOpt?.priorityFiles || [];
+    const excludePatterns = ragOpt?.filePatterns?.exclude || [];
+    const indexConfig = ragOpt?.recommendedIndexingConfig;
+    const totalFiles = summary.totalFiles || 0;
 
     const detectedIncludes = directories
       .filter(
@@ -522,9 +583,9 @@ function mergeRagConfigurations(
           : defaultConfig.includes,
       excludes: [...defaultConfig.excludes, ...excludePatterns],
       chunkSize:
-        (indexConfig?.chunkSize as number) || (totalFiles > 200 ? 1000 : 800),
+        indexConfig?.chunkSize || (totalFiles > 200 ? 1000 : 800),
       chunkOverlap:
-        (indexConfig?.chunkOverlap as number) || (totalFiles > 200 ? 200 : 120),
+        indexConfig?.chunkOverlap || (totalFiles > 200 ? 200 : 120),
       priorityFiles: priorityFiles,
     };
   }
@@ -542,7 +603,7 @@ function mergeRagConfigurations(
 }
 
 async function buildEmbeddingIndex(
-  ragConfig: Record<string, unknown>,
+  ragConfig: MergedRagConfig,
   forceRebuild: boolean,
   useIncremental: boolean = true
 ): Promise<void> {
@@ -551,7 +612,7 @@ async function buildEmbeddingIndex(
 
   if (ragConfig.documentationConfig) {
     const logger = getLogger();
-    const docConfig = ragConfig.documentationConfig as Record<string, unknown>;
+    const docConfig = ragConfig.documentationConfig;
     logger.info(
       `Using documentation-specific chunking: ${docConfig.chunkSize}/${docConfig.chunkOverlap}`
     );
@@ -559,31 +620,31 @@ async function buildEmbeddingIndex(
 
   await ensureRagDatabase(
     process.cwd(),
-    ragConfig.includes as string[],
-    ragConfig.excludes as string[],
-    ragConfig.chunkSize as number,
-    ragConfig.chunkOverlap as number,
+    ragConfig.includes,
+    ragConfig.excludes,
+    ragConfig.chunkSize,
+    ragConfig.chunkOverlap,
     embedder,
     !forceRebuild && useIncremental,
-    ragConfig.documentationConfig as Record<string, unknown>
+    ragConfig.documentationConfig as Record<string, unknown> | undefined
   );
 }
 
 async function buildLocalIndex(
-  ragConfig: Record<string, unknown>
+  ragConfig: MergedRagConfig
 ): Promise<void> {
   const config = await loadConfig();
   const embedder = await makeEmbeddings(config.project?.rag || {}, config);
 
   await ensureRagDatabase(
     process.cwd(),
-    ragConfig.includes as string[],
-    ragConfig.excludes as string[],
-    ragConfig.chunkSize as number,
-    ragConfig.chunkOverlap as number,
+    ragConfig.includes,
+    ragConfig.excludes,
+    ragConfig.chunkSize,
+    ragConfig.chunkOverlap,
     embedder,
     false,
-    ragConfig.documentationConfig as Record<string, unknown>
+    ragConfig.documentationConfig as Record<string, unknown> | undefined
   );
 }
 

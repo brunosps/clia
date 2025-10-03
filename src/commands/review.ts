@@ -34,7 +34,39 @@ interface FileChange {
   ragContext: string;
 }
 
+interface StackItem {
+  type: string;
+  name: string;
+  [key: string]: unknown;
+}
+
+interface StackPrimary {
+  name: string;
+  [key: string]: unknown;
+}
+
+interface RawStackData {
+  primary?: StackPrimary;
+  secondary?: StackItem[];
+  [key: string]: unknown;
+}
+
+interface StackAnalysisFile {
+  raw_stack_data?: RawStackData;
+  [key: string]: unknown;
+}
+
+interface StackContext {
+  languages: string[];
+  frameworks: string[];
+  build_tools: string[];
+  primary_runtime: string;
+  confidence: string;
+  [key: string]: unknown;
+}
+
 interface FileAnalysisContext {
+  [key: string]: unknown;
   target: string;
   mode: string;
   filePath: string;
@@ -146,26 +178,76 @@ interface ConsolidationResponse {
   };
 }
 
+interface ProjectMetadata {
+  projectName?: string;
+  version?: string;
+  description?: string;
+}
+
+interface ProjectContext {
+  metadata?: ProjectMetadata;
+  dependencies?: string[];
+  devDependencies?: string[];
+  scripts?: Record<string, string>;
+}
+
+interface SemgrepData {
+  findings: number;
+  rules: string[];
+}
+
+interface TrivyData {
+  vulnerabilities: number;
+  severities: string[];
+}
+
+interface SecurityData {
+  findings: unknown[];
+  vulnerabilities: unknown[];
+  semgrep?: SemgrepData;
+  trivy?: TrivyData;
+}
+
+interface ReviewContext {
+  ragContext: string;
+  stackContext: StackContext | null;
+  projectContext: ProjectContext | null;
+  securityContext: string;
+}
+
+interface PromptContext {
+  [key: string]: unknown;
+  target: string;
+  mode: string;
+  group: string;
+  fileAnalyses: string;
+  stackContext: string;
+  projectName: string;
+  userLanguage: string;
+  timestamp: string;
+}
+
+interface ConsolidationPromptContext {
+  [key: string]: unknown;
+  target: string;
+  mode: string;
+  groupReviews: string;
+  totalFiles: number;
+  stackContext: string;
+  projectName: string;
+  userLanguage: string;
+  timestamp: string;
+}
+
 export function reviewCommand(): Command {
   return new Command('review')
-    .description(`Code review analysis with quality metrics and security assessment
-Examples:
-  $ clia review                    # Review only staged files (git diff --cached)
-  $ clia review --commit abc123    # Review specific commit changes
-  $ clia review --tag v1.0.0       # Review changes in git tag
-  $ clia review --range HEAD~3..HEAD  # Review commit range
-  $ clia review --branch develop   # Review changes compared to branch
-Note: Without parameters, only staged files will be reviewed. Use --commit, --tag, or --range to review committed changes.`
-    )
+    .description('Code review analysis with quality metrics and security assessment v1.0.0')
     .option('--commit <COMMIT>', 'Specific commit hash to review')
     .option('--tag <TAG>', 'Git tag to review')
-    .option('--range <RANGE>', 'Commit range (e.g., "HEAD~5..HEAD")')
-    .option('--branch <BRANCH>', 'Branch to compare against (default: main)')
+    .option('--range <RANGE>', 'Commit range to review')
+    .option('--branch <BRANCH>', 'Branch to compare against')
     .option('-o, --output <FILE>', 'Output file path')
-    .option(
-      '--output-language <OUTPUT_LANGUAGE>',
-      'Translate to pt-Br or other language'
-    )
+    .option('--output-language <OUTPUT_LANGUAGE>', 'Translate report to language')
     .action(async (options) => {
       const logger = getLogger();
       try {
@@ -174,8 +256,8 @@ Note: Without parameters, only staged files will be reviewed. Use --commit, --ta
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
-        await logger.error(`Review command failed: ${errorMessage}`);
-        console.log(`Review command failed: ${errorMessage}`);
+        await logger.error(`❌ Review command failed: ${errorMessage}`);
+        console.log(`❌ Review command failed: ${errorMessage}`);
         process.exit(1);
       }
     });
@@ -197,20 +279,20 @@ export async function runReviewCommand(options: ReviewOptions): Promise<void> {
 
   const context = await collectContexts(files, config);
 
-  const { consolidatedReview, groupReviews, fileAnalyses } =
+  const { fileAnalyses } =
     await executeReview(mode, target, files, context, config, options);
 
   const executionTime = Date.now() - startTime;
 
   await generateReports(
-    consolidatedReview,
-    groupReviews,
     fileAnalyses,
+    mode,
+    target,
     options,
     config,
     executionTime
   );
-  displaySummary(consolidatedReview, executionTime);
+  displaySummary(fileAnalyses, mode, target, executionTime);
 }
 
 async function analyzeTarget(options: ReviewOptions) {
@@ -388,41 +470,32 @@ async function collectContexts(files: FileChange[], config: Config) {
     ragContext = 'RAG context unavailable';
   }
 
-  let stackContext: Record<string, unknown> | null = null;
-  let projectContext: Record<string, unknown> | null = null;
+  let stackContext: StackContext | null = null;
+  let projectContext: ProjectContext | null = null;
   let securityContext = '';
 
-  // Load stack analysis from file if available
   try {
     const stackAnalysisPath = path.join(
       process.cwd(),
       '.clia/stack-analysis.json'
     );
     if (fs.existsSync(stackAnalysisPath)) {
-      const stackData = JSON.parse(fs.readFileSync(stackAnalysisPath, 'utf-8'));
+      const stackData: StackAnalysisFile = JSON.parse(fs.readFileSync(stackAnalysisPath, 'utf-8'));
       stackContext = {
         languages: stackData.raw_stack_data?.secondary
-          ?.filter((s: any) => s.type === 'language')
-          ?.map((l: any) => l.name) || ['Unknown'],
+          ?.filter((s: StackItem) => s.type === 'language')
+          ?.map((l: StackItem) => l.name) || ['Unknown'],
         frameworks:
           stackData.raw_stack_data?.secondary
-            ?.filter((s: any) => s.type === 'framework')
-            ?.map((f: any) => f.name) || [],
+            ?.filter((s: StackItem) => s.type === 'framework')
+            ?.map((f: StackItem) => f.name) || [],
         build_tools:
           stackData.raw_stack_data?.secondary
             ?.filter(
-              (s: any) => s.type === 'tool' || s.type === 'package_manager'
+              (s: StackItem) => s.type === 'tool' || s.type === 'package_manager'
             )
-            ?.map((t: any) => t.name) || [],
-        primary_runtime:
-          ((
-            (
-              (stackData as Record<string, unknown>).raw_stack_data as Record<
-                string,
-                unknown
-              >
-            )?.primary as Record<string, unknown>
-          )?.name as string) || 'Unknown',
+            ?.map((t: StackItem) => t.name) || [],
+        primary_runtime: stackData.raw_stack_data?.primary?.name || 'Unknown',
         confidence: 'high',
       };
     } else {
@@ -432,7 +505,8 @@ async function collectContexts(files: FileChange[], config: Config) {
         languages: detectionResult.languages?.map((l) => l.name) || [],
         frameworks: detectionResult.frameworks?.map((f) => f.name) || [],
         build_tools: detectionResult.tools?.map((t) => t.name) || [],
-        confidence: detectionResult.confidence || 'medium',
+        primary_runtime: detectionResult.primary?.name || 'Unknown',
+        confidence: String(detectionResult.confidence || 'medium'),
       };
     }
   } catch (stackError) {
@@ -441,11 +515,11 @@ async function collectContexts(files: FileChange[], config: Config) {
       languages: ['Unknown'],
       frameworks: [],
       build_tools: [],
+      primary_runtime: 'Unknown',
       confidence: 'low',
     };
   }
 
-  // Load project inspection data if available
   try {
     const projectInspectionPath = path.join(
       process.cwd(),
@@ -468,7 +542,7 @@ async function collectContexts(files: FileChange[], config: Config) {
       mcpClient.trivyScan(process.cwd()),
     ]);
 
-    const securityData: Record<string, unknown> = {
+    const securityData: SecurityData = {
       findings: [],
       vulnerabilities: [],
     };
@@ -503,17 +577,12 @@ async function executeReview(
   mode: string,
   target: string,
   files: FileChange[],
-  context: {
-    ragContext: string;
-    stackContext: Record<string, unknown> | null;
-    projectContext: Record<string, unknown> | null;
-    securityContext: string;
-  },
+  context: ReviewContext,
   config: Config,
   options: ReviewOptions
 ): Promise<{
-  consolidatedReview: ConsolidationResponse;
-  groupReviews: GroupAnalysisResponse[];
+  // consolidatedReview: ConsolidationResponse;
+  // groupReviews: GroupAnalysisResponse[];
   fileAnalyses: FileAnalysisResponse[];
 }> {
   const outputLanguage = resolveOutputLanguage(options, config);
@@ -548,68 +617,64 @@ async function executeReview(
     fileAnalyses.push(fileAnalysis);
   }
 
-  // Step 2: Group files by functionality and analyze each group
-  const groupedFiles = groupFilesByFunctionality(fileAnalyses);
-  const groupReviews: GroupAnalysisResponse[] = [];
+  // const groupedFiles = groupFilesByFunctionality(fileAnalyses);
+  // const groupReviews: GroupAnalysisResponse[] = [];
 
-  logger.info(
-    `Analyzing ${Object.keys(groupedFiles).length} functional groups`
-  );
+  // logger.info(
+  //   `Analyzing ${Object.keys(groupedFiles).length} functional groups`
+  // );
 
-  for (const [groupName, groupFiles] of Object.entries(groupedFiles)) {
-    const promptContext: GroupAnalysisContext = {
-      target,
-      mode,
-      group: groupName,
-      fileAnalyses: groupFiles,
-      stackContext: JSON.stringify(context.stackContext, null, 2),
-      projectName:
-        ((context.projectContext?.metadata as Record<string, unknown>)
-          ?.projectName as string) ||
-        config.project?.name ||
-        'Unknown Project',
-      userLanguage: outputLanguage,
-      timestamp,
-    };
+  // for (const [groupName, groupFiles] of Object.entries(groupedFiles)) {
+  //   const promptContext: PromptContext = {
+  //     target,
+  //     mode,
+  //     group: groupName,
+  //     fileAnalyses: JSON.stringify(groupFiles, null, 2),
+  //     stackContext: JSON.stringify(context.stackContext, null, 2),
+  //     projectName:
+  //       context.projectContext?.metadata?.projectName ||
+  //       config.project?.name ||
+  //       'Unknown Project',
+  //     userLanguage: outputLanguage,
+  //     timestamp,
+  //   };
 
-    const groupReview = await execPrompt<
-      GroupAnalysisContext,
-      GroupAnalysisResponse
-    >('review/analyse-review-group', promptContext, '1.0.0', 'default', 0.3);
+  //   const groupReview = await execPrompt<
+  //     PromptContext,
+  //     GroupAnalysisResponse
+  //   >('review/analyse-review-group', promptContext, '1.0.0', 'default', 0.3);
 
-    groupReviews.push(groupReview);
-  }
+  //   groupReviews.push(groupReview);
+  // }
 
-  // Step 3: Consolidate all reviews and provide final decision
-  logger.info('Consolidating review and generating final decision');
+  // logger.info('Consolidating review and generating final decision');
 
-  const promptContext: ConsolidationContext = {
-    target,
-    mode,
-    groupReviews,
-    totalFiles: files.length,
-    stackContext: JSON.stringify(context.stackContext, null, 2),
-    projectName:
-      ((context.projectContext?.metadata as Record<string, unknown>)
-        ?.projectName as string) ||
-      config.project?.name ||
-      'Unknown Project',
-    userLanguage: outputLanguage,
-    timestamp,
-  };
+  // const promptContext: ConsolidationPromptContext = {
+  //   target,
+  //   mode,
+  //   groupReviews: JSON.stringify(groupReviews, null, 2),
+  //   totalFiles: files.length,
+  //   stackContext: JSON.stringify(context.stackContext, null, 2),
+  //   projectName:
+  //     context.projectContext?.metadata?.projectName ||
+  //     config.project?.name ||
+  //     'Unknown Project',
+  //   userLanguage: outputLanguage,
+  //   timestamp,
+  // };
 
-  const consolidatedReview = await execPrompt<
-    ConsolidationContext,
-    ConsolidationResponse
-  >(
-    'review/sumary-and-opinion-consolidate',
-    promptContext,
-    '1.0.0',
-    'default',
-    0.3
-  );
+  // const consolidatedReview = await execPrompt<
+  //   ConsolidationPromptContext,
+  //   ConsolidationResponse
+  // >(
+  //   'review/sumary-and-opinion-consolidate',
+  //   promptContext,
+  //   '1.0.0',
+  //   'default',
+  //   0.3
+  // );
 
-  return { consolidatedReview, groupReviews, fileAnalyses };
+  return { fileAnalyses };
 }
 
 function groupFilesByFunctionality(
@@ -649,18 +714,15 @@ function detectFileLanguage(filePath: string): string {
 }
 
 async function generateReports(
-  consolidatedReview: ConsolidationResponse,
-  groupReviews: GroupAnalysisResponse[],
   fileAnalyses: FileAnalysisResponse[],
+  mode: string,
+  target: string,
   options: ReviewOptions,
   config: Config,
   executionTime: number
 ): Promise<void> {
   const timestamp = generateTimestamp();
-  const targetSafe = consolidatedReview.review_summary.target.replace(
-    /[/\\:~]/g,
-    '-'
-  );
+  const targetSafe = target.replace(/[/\\:~]/g, '-');
 
   const reportsDir = path.join(
     process.cwd(),
@@ -676,9 +738,9 @@ async function generateReports(
   }
 
   const markdownContent = generateMarkdownReport(
-    consolidatedReview,
-    groupReviews,
     fileAnalyses,
+    mode,
+    target,
     executionTime
   );
   const markdownFile = path.join(
@@ -691,11 +753,13 @@ async function generateReports(
   );
 
   const fullReviewData = {
-    consolidatedReview,
-    groupReviews,
+    mode,
+    target,
     fileAnalyses,
+    totalFiles: fileAnalyses.length,
     executionTime,
     executionTimeFormatted: formatExecutionTime(executionTime),
+    timestamp: new Date().toISOString(),
   };
 
   if (options.output) {
@@ -723,85 +787,45 @@ async function generateReports(
 }
 
 function generateMarkdownReport(
-  consolidatedReview: ConsolidationResponse,
-  groupReviews: GroupAnalysisResponse[],
   fileAnalyses: FileAnalysisResponse[],
+  mode: string,
+  target: string,
   executionTime: number
 ): string {
-  const decision = consolidatedReview.decision.recommendation;
-  const decisionText =
-    decision === 'approve'
-      ? 'APPROVE'
-      : decision === 'request_changes'
-        ? 'REQUEST CHANGES'
-        : 'REJECT';
-
   let markdown = `# Code Review Report\n\n`;
 
-  markdown += `## Decision: ${decisionText}\n\n`;
-  markdown += `**Target**: ${consolidatedReview.review_summary.target}\n\n`;
-  markdown += `**Mode**: ${consolidatedReview.review_summary.mode}\n\n`;
-  markdown += `**Files Analyzed**: ${consolidatedReview.review_summary.total_files}\n\n`;
-  markdown += `**Groups**: ${consolidatedReview.review_summary.total_groups}\n\n`;
-  markdown += `**Overall Score**: ${consolidatedReview.consolidated_metrics.final_score}/10\n\n`;
+  markdown += `**Target**: ${target}\n\n`;
+  markdown += `**Mode**: ${mode}\n\n`;
+  markdown += `**Files Analyzed**: ${fileAnalyses.length}\n\n`;
   markdown += `**Execution Time**: ${formatExecutionTime(executionTime)}\n\n`;
-  markdown += `**Date**: ${new Date(consolidatedReview.review_summary.timestamp).toLocaleString()}\n\n`;
+  markdown += `**Date**: ${new Date().toLocaleString()}\n\n`;
 
-  markdown += `## Summary\n\n`;
-  markdown += `**Intention**: ${consolidatedReview.overall_assessment.intention}\n\n`;
-  markdown += `**Approach Quality**: ${consolidatedReview.overall_assessment.approach_quality}\n\n`;
-  markdown += `**Architectural Impact**: ${consolidatedReview.overall_assessment.architectural_impact}\n\n`;
-  markdown += `**Overall Risk**: ${consolidatedReview.overall_assessment.overall_risk.toUpperCase()}\n\n`;
+  // Calcular métricas agregadas
+  const avgSecurity = fileAnalyses.reduce((sum, f) => sum + f.analysis.security_score, 0) / fileAnalyses.length;
+  const avgQuality = fileAnalyses.reduce((sum, f) => sum + f.analysis.code_quality_score, 0) / fileAnalyses.length;
+  const avgMaintainability = fileAnalyses.reduce((sum, f) => sum + f.analysis.maintainability_score, 0) / fileAnalyses.length;
+  const avgComplexity = fileAnalyses.reduce((sum, f) => sum + f.analysis.complexity_score, 0) / fileAnalyses.length;
 
-  markdown += `## Quality Metrics\n\n`;
-  markdown += `| Metric | Score |\n`;
-  markdown += `|--------|-------|\n`;
-  markdown += `| Security | ${consolidatedReview.consolidated_metrics.overall_security_score}/10 |\n`;
-  markdown += `| Code Quality | ${consolidatedReview.consolidated_metrics.overall_code_quality_score}/10 |\n`;
-  markdown += `| Maintainability | ${consolidatedReview.consolidated_metrics.overall_maintainability_score}/10 |\n\n`;
+  markdown += `## Overall Metrics\n\n`;
+  markdown += `| Metric | Average Score |\n`;
+  markdown += `|--------|---------------|\n`;
+  markdown += `| Security | ${avgSecurity.toFixed(1)}/10 |\n`;
+  markdown += `| Code Quality | ${avgQuality.toFixed(1)}/10 |\n`;
+  markdown += `| Maintainability | ${avgMaintainability.toFixed(1)}/10 |\n`;
+  markdown += `| Complexity | ${avgComplexity.toFixed(1)}/10 |\n\n`;
 
-  // Add group details
-  if (groupReviews.length > 0) {
-    markdown += `## Group Analysis\n\n`;
-    groupReviews.forEach((group) => {
-      markdown += `### ${group.group_name}\n`;
-      markdown += `**Purpose**: ${group.group_purpose}\n\n`;
-      markdown += `**Files**:\n - ${group.files_in_group.join('\n - ')}\n\n`;
-      markdown += `**Risk Level**: ${group.group_risk_level.toUpperCase()}\n\n`;
-      markdown += `**Score**: ${group.consolidated_scores.overall_score}/10\n\n`;
-    });
-  }
+  // Contar níveis de risco
+  const riskCounts = fileAnalyses.reduce((acc, f) => {
+    acc[f.risk_level] = (acc[f.risk_level] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
 
-  if (consolidatedReview.decision.required_changes.length > 0) {
-    markdown += `## Required Changes\n\n`;
-    consolidatedReview.decision.required_changes.forEach((change) => {
-      markdown += `- ${change}\n`;
-    });
-    markdown += `\n`;
-  }
+  markdown += `## Risk Distribution\n\n`;
+  markdown += `- 🔴 High Risk: ${riskCounts['high'] || 0} files\n`;
+  markdown += `- 🟡 Medium Risk: ${riskCounts['medium'] || 0} files\n`;
+  markdown += `- 🟢 Low Risk: ${riskCounts['low'] || 0} files\n\n`;
 
-  if (consolidatedReview.decision.suggested_improvements.length > 0) {
-    markdown += `## Suggested Improvements\n\n`;
-    consolidatedReview.decision.suggested_improvements.forEach(
-      (improvement) => {
-        markdown += `- ${improvement}\n`;
-      }
-    );
-    markdown += `\n`;
-  }
-
-  markdown += `## Decision Rationale\n\n`;
-  markdown += `${consolidatedReview.decision.rationale}\n\n`;
-
-  if (consolidatedReview.decision.next_steps.length > 0) {
-    markdown += `**Next Steps**:\n`;
-    consolidatedReview.decision.next_steps.forEach((step) => {
-      markdown += `- ${step}\n`;
-    });
-    markdown += `\n`;
-  }
-
-  markdown += `\n---\n\n`;
+  markdown += `---\n\n`;
   markdown += `## File-by-File Analysis\n\n`;
 
   if (fileAnalyses.length === 0) {
@@ -810,7 +834,6 @@ function generateMarkdownReport(
     fileAnalyses.forEach((file, index) => {
       markdown += `### ${index + 1}. \`${file.file_path}\`\n\n`;
 
-      // Metadados do arquivo
       markdown += `| Property | Value |\n`;
       markdown += `|----------|-------|\n`;
       markdown += `| **Group** | ${file.group} |\n`;
@@ -818,7 +841,6 @@ function generateMarkdownReport(
       markdown += `| **Language** | ${file.language} |\n`;
       markdown += `| **Risk Level** | 🔥 ${file.risk_level.toUpperCase()} |\n\n`;
 
-      // Scores
       markdown += `#### 📊 Quality Scores\n\n`;
       markdown += `| Metric | Score |\n`;
       markdown += `|--------|-------|\n`;
@@ -827,11 +849,9 @@ function generateMarkdownReport(
       markdown += `| Maintainability | ${file.analysis.maintainability_score}/10 |\n`;
       markdown += `| Code Quality | ${file.analysis.code_quality_score}/10 |\n\n`;
 
-      // Purpose
       markdown += `#### 🎯 Purpose\n\n`;
       markdown += `${file.analysis.purpose}\n\n`;
 
-      // Recommendations
       if (file.recommendations && file.recommendations.length > 0) {
         markdown += `#### 💡 Recommendations\n\n`;
         file.recommendations.forEach((rec, recIndex) => {
@@ -840,7 +860,6 @@ function generateMarkdownReport(
         markdown += `\n`;
       }
 
-      // Issues
       const hasIssues =
         [
           ...file.issues.security_vulnerabilities,
@@ -888,7 +907,6 @@ function generateMarkdownReport(
         markdown += `This file passed all quality checks without significant issues.\n\n`;
       }
 
-      // Separador entre arquivos
       if (index < fileAnalyses.length - 1) {
         markdown += `---\n\n`;
       }
@@ -903,44 +921,30 @@ function generateMarkdownReport(
 }
 
 function displaySummary(
-  consolidatedReview: ConsolidationResponse,
-  executionTime?: number
+  fileAnalyses: FileAnalysisResponse[],
+  mode: string,
+  target: string,
+  executionTime: number
 ): void {
-  const decision = consolidatedReview.decision.recommendation;
+  const avgSecurity = fileAnalyses.reduce((sum, f) => sum + f.analysis.security_score, 0) / fileAnalyses.length;
+  const avgQuality = fileAnalyses.reduce((sum, f) => sum + f.analysis.code_quality_score, 0) / fileAnalyses.length;
+  const avgMaintainability = fileAnalyses.reduce((sum, f) => sum + f.analysis.maintainability_score, 0) / fileAnalyses.length;
+  
+  const riskCounts = fileAnalyses.reduce((acc, f) => {
+    acc[f.risk_level] = (acc[f.risk_level] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
 
-  console.log('\nReview Summary:');
-  console.log(`   Decision: ${decision.toUpperCase()}`);
-  console.log(
-    `   Final Score: ${consolidatedReview.consolidated_metrics.final_score}/10`
-  );
-  console.log(`   Files: ${consolidatedReview.review_summary.total_files}`);
-  console.log(`   Groups: ${consolidatedReview.review_summary.total_groups}`);
-  console.log(
-    `   Security: ${consolidatedReview.consolidated_metrics.overall_security_score}/10`
-  );
-  console.log(
-    `   Code Quality: ${consolidatedReview.consolidated_metrics.overall_code_quality_score}/10`
-  );
-  console.log(
-    `   Maintainability: ${consolidatedReview.consolidated_metrics.overall_maintainability_score}/10`
-  );
-
-  if (executionTime) {
-    console.log(`   Execution Time: ${formatExecutionTime(executionTime)}`);
-  }
-
-  if (consolidatedReview.decision.required_changes.length > 0) {
-    console.log(
-      `   Required Changes: ${consolidatedReview.decision.required_changes.length}`
-    );
-  }
-
-  if (consolidatedReview.risk_analysis.critical_blockers.length > 0) {
-    console.log(
-      `   Critical Blockers: ${consolidatedReview.risk_analysis.critical_blockers.length}`
-    );
-  }
-
+  console.log('\n✅ Review Summary:');
+  console.log(`   Target: ${target}`);
+  console.log(`   Mode: ${mode}`);
+  console.log(`   Files Analyzed: ${fileAnalyses.length}`);
+  console.log(`   Security: ${avgSecurity.toFixed(1)}/10`);
+  console.log(`   Code Quality: ${avgQuality.toFixed(1)}/10`);
+  console.log(`   Maintainability: ${avgMaintainability.toFixed(1)}/10`);
+  console.log(`   Execution Time: ${formatExecutionTime(executionTime)}`);
+  console.log(`\n   Risk Distribution:`);
+  console.log(`   🔴 High: ${riskCounts['high'] || 0} | 🟡 Medium: ${riskCounts['medium'] || 0} | 🟢 Low: ${riskCounts['low'] || 0}`);
   console.log();
 }
 

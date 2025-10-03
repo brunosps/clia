@@ -29,6 +29,7 @@ interface CodeExample {
 }
 
 interface BasePromptContext {
+  [key: string]: unknown;
   question: string;
   projectName: string;
   userLanguage: string;
@@ -41,7 +42,7 @@ interface GeneralPromptContext extends BasePromptContext {
 }
 
 interface ProjectOnlyPromptContext extends BasePromptContext {
-  // RAG context is required for project-only mode
+  ragContext: string;
 }
 
 interface SourceAnalysisPromptContext extends BasePromptContext {
@@ -71,29 +72,12 @@ export function askCommand(): Command {
   const cmd = new Command('ask');
 
   cmd
-    .description(
-      'AI-powered question answering with project context integration and multilingual support'
-    )
-    .argument(
-      '<question>',
-      '❓ Technical question to ask (you can quote a file path)'
-    )
-    .option(
-      '--project-only',
-      '📁 Focus only on project context and avoid external/general knowledge',
-      false
-    )
-    .option(
-      '--format <type>',
-      '📄 Response format: markdown or json (default: markdown)',
-      'markdown'
-    )
-    .option(
-      '-o, --output <file>',
-      '💾 Save response to file (default: console only)',
-      ''
-    )
-    .option('-k, --limit <number>', '🔢 Maximum RAG contexts to include', '6')
+    .description('AI-powered question answering with project context integration v1.0.0')
+    .argument('<question>', 'Technical question to ask')
+    .option('--project-only', 'Focus only on project context', false)
+    .option('--format <type>', 'Response format: markdown or json', 'markdown')
+    .option('-o, --output <file>', 'Save response to file', '')
+    .option('-k, --limit <number>', 'Maximum RAG contexts to include', '6')
     .action(async (question: string, options: AskOptions) => {
       const logger = getLogger();
       try {
@@ -105,8 +89,8 @@ export function askCommand(): Command {
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
-        logger.error(`Ask command failed: ${errorMessage}`);
-        console.log(`Ask command failed: ${errorMessage}`);
+        logger.error(`❌ Ask command failed: ${errorMessage}`);
+        console.log(`❌ Ask command failed: ${errorMessage}`);
         process.exit(1);
       }
     });
@@ -274,7 +258,6 @@ function determineAnalysisMode(
   filePath?: string,
   fileKind?: FileKind
 ): AnalysisMode {
-  // If a specific file is referenced and it exists, analyze by file type
   if (filePath && fs.existsSync(filePath)) {
     if (fileKind === 'doc') {
       return 'doc-analysis';
@@ -283,12 +266,10 @@ function determineAnalysisMode(
     }
   }
 
-  // If --project-only flag is used
   if (projectOnly) {
     return 'project-only';
   }
 
-  // Default to general analysis
   return 'general';
 }
 
@@ -317,8 +298,7 @@ async function processSourceAnalysis(
       promptContext,
       '1.0.0',
       'default',
-      2,
-      3
+      0.3
     );
 
     return response;
@@ -352,8 +332,7 @@ async function processDocAnalysis(
       promptContext,
       '1.0.0',
       'default',
-      2,
-      3
+      0.3
     );
 
     return response;
@@ -382,7 +361,8 @@ async function processProjectOnlyAnalysis(
 
   try {
       const ragConfig = config.project?.rag || { includes: [], excludes: [], chunkSize: 1000, chunkOverlap: 200 };
-      const embedder = await makeEmbeddings(ragConfig, config as any);    const enhancedQuery = enhanceQuery(question);
+      const embedder = await makeEmbeddings(ragConfig, config);
+      const enhancedQuery = enhanceQuery(question);
     logger.info(
       `Enhanced query: ${enhancedQuery !== question ? 'applied' : 'no enhancement'}`
     );
@@ -439,8 +419,7 @@ async function processProjectOnlyAnalysis(
     promptContext,
     '1.0.0',
     'default',
-    0.5,
-    3
+    0.3
   );
 
   return response;
@@ -490,8 +469,7 @@ async function processGeneralAnalysis(
     promptContext,
     '1.0.0',
     'default',
-    5,
-    3
+    0.8
   );
 
   return response;
@@ -592,7 +570,6 @@ const QUERY_ENHANCEMENTS: QueryEnhancement[] = [
 ];
 
 function extractQuestionFile(raw: string): QuestionFile {
-  // tenta achar 'algum/arquivo.ext' entre aspas simples/dobras OU sem aspas
   const quoted = raw.match(/['"]([^'"]+\.[A-Za-z0-9._-]+)['"]/);
   const direct = !quoted
     ? raw.match(/(?:^|\s)([A-Za-z0-9_./-]+\.[A-Za-z0-9._-]+)(?:\s|$)/)

@@ -13,6 +13,7 @@ interface StackOptions {
 }
 
 interface PromptContext {
+  [key: string]: unknown;
   projectName: string;
   timestamp: string;
   userLanguage: string;
@@ -20,50 +21,99 @@ interface PromptContext {
   analysisDepth: string;
 }
 
-interface StackResponse {
-  summary: {
-    primary_language: string;
-    project_type: string;
-    maturity_level: string;
-    complexity_score: number;
-  };
-  recommendations: {
-    modernization: Array<{
-      category: string;
-      current: string;
-      recommended: string;
-      priority: string;
-      reason: string;
-    }>;
-    security: Array<{
-      severity: string;
-      issue: string;
-      solution: string;
-    }>;
-  };
+interface ModernizationRecommendation {
+  category: string;
+  current: string;
+  recommended: string;
+  priority: string;
+  reason: string;
+}
+
+interface SecurityRecommendation {
+  severity: string;
+  issue: string;
+  solution: string;
+}
+
+interface StackSummary {
+  primary_language: string;
+  project_type: string;
+  maturity_level: string;
+  complexity_score: number;
+}
+
+interface StackRecommendations {
+  modernization: ModernizationRecommendation[];
+  security: SecurityRecommendation[];
+}
+
+interface StackMetadata {
+  projectName: string;
+  version: string;
   confidence: number;
-  metadata: {
-    projectName: string;
-    version: string;
-    confidence: number;
-  };
+}
+
+interface StackResponse {
+  summary: StackSummary;
+  recommendations: StackRecommendations;
+  confidence: number;
+  metadata: StackMetadata;
+}
+
+interface PrimaryStack {
+  name: string;
+  confidence: number;
+}
+
+interface LanguageInfo {
+  name: string;
+  version?: string;
+  confidence: number;
+}
+
+interface FrameworkInfo {
+  name: string;
+  version?: string;
+  confidence: number;
+}
+
+interface ToolInfo {
+  name: string;
+  confidence: number;
+}
+
+interface StackData {
+  primary: PrimaryStack;
+  languages: LanguageInfo[];
+  frameworks: FrameworkInfo[];
+  tools: ToolInfo[];
+}
+
+interface JsonReport {
+  timestamp: string;
+  raw_stack_data: StackData;
+  analysis_result?: StackResponse;
+  generated_by: string;
+  command: string;
 }
 
 export function stackCommand(): Command {
   const cmd = new Command('stack');
 
   cmd
-    .description('Technology stack detection and analysis with AI-powered recommendations')
-    .option('--analyze', 'Perform AI-powered analysis of detected stack', false)
-    .option('--deep', 'Deep analysis with comprehensive recommendations (requires --analyze)', false)    
-    .action(async (options: StackOptions) => {
+    .description('Technology stack detection and AI-powered analysis v1.0.0')  
+    .action(async () => {
       const logger = getLogger();
       try {
-        await processStackOperation(options);
+        await processStackOperation({
+          analyze: true,
+          deep: true,
+        });
+        process.exit(0);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        logger.error(`Stack analysis failed: ${errorMessage}`);
-        console.log(`Stack analysis failed: ${errorMessage}`);
+        logger.error(`❌ Stack analysis failed: ${errorMessage}`);
+        console.log(`❌ Stack analysis failed: ${errorMessage}`);
         process.exit(1);
       }
     });
@@ -78,11 +128,11 @@ async function processStackOperation(options: StackOptions): Promise<void> {
   logger.info('Starting technology stack analysis');
 
   const mcpClient = McpClient.fromConfig();
-  let stackData: Record<string, unknown>;
+  let stackData: StackData;
 
   try {
     const stackInfo = await mcpClient.detectStack();
-    stackData = stackInfo as unknown as Record<string, unknown>;
+    stackData = stackInfo as unknown as StackData;
     if (!stackData) {
       logger.warn('MCP stack-detector not available or returned no data');
       stackData = createFallbackStackData();
@@ -119,7 +169,7 @@ async function processStackOperation(options: StackOptions): Promise<void> {
   }
 }
 
-function createFallbackStackData(): Record<string, unknown> {
+function createFallbackStackData(): StackData {
   return { 
     primary: { name: 'Mixed Project', confidence: 50 },
     languages: [],
@@ -128,7 +178,7 @@ function createFallbackStackData(): Record<string, unknown> {
   };
 }
 
-async function analyzeStack(config: Config, stackData: Record<string, unknown>, options: StackOptions): Promise<StackResponse> {
+async function analyzeStack(config: Config, stackData: StackData, options: StackOptions): Promise<StackResponse> {
   const promptContext: PromptContext = {
     projectName: config.project?.name || 'Unknown Project',
     timestamp: generateTimestamp(),
@@ -139,7 +189,7 @@ async function analyzeStack(config: Config, stackData: Record<string, unknown>, 
     analysisDepth: options.deep ? 'comprehensive' : 'detailed'
   };
 
-  const tier = options.deep ? 'premium' : 'default';
+  const tier = 'default';
 
   const response = await execPrompt<PromptContext, StackResponse>(
     'stack',
@@ -152,44 +202,44 @@ async function analyzeStack(config: Config, stackData: Record<string, unknown>, 
   return response;
 }
 
-function displayStackInfo(stackData: Record<string, unknown>): void {
-  const primary = stackData.primary as Record<string, unknown>;
+function displayStackInfo(stackData: StackData): void {
+  const primary = stackData.primary;
   if (primary) {
-    const confidence = primary.confidence as number;
+    const confidence = primary.confidence;
     console.log(`\nPrimary Stack: ${primary.name} (${confidence?.toFixed(1) || 'N/A'}% confidence)`);
   }
 
-  const languages = stackData.languages as Array<Record<string, unknown>>;
+  const languages = stackData.languages;
   if (languages?.length > 0) {
     console.log('\nLanguages:');
-    languages.forEach((lang: Record<string, unknown>) => {
-      const confidence = (lang.confidence as number)?.toFixed(1) || 'N/A';
+    languages.forEach((lang: LanguageInfo) => {
+      const confidence = lang.confidence?.toFixed(1) || 'N/A';
       console.log(`   ${lang.name} ${lang.version ? `(${lang.version})` : ''} - ${confidence}%`);
     });
   }
 
-  const frameworks = stackData.frameworks as Array<Record<string, unknown>>;
+  const frameworks = stackData.frameworks;
   if (frameworks?.length > 0) {
     console.log('\nFrameworks & Libraries:');
-    frameworks.forEach((fw: Record<string, unknown>) => {
-      const confidence = (fw.confidence as number)?.toFixed(1) || 'N/A';
+    frameworks.forEach((fw: FrameworkInfo) => {
+      const confidence = fw.confidence?.toFixed(1) || 'N/A';
       const version = fw.version ? `v${fw.version}` : 'unknown version';
       console.log(`   ${fw.name} (${version}) - ${confidence}%`);
     });
   }
 
-  const tools = stackData.tools as Array<Record<string, unknown>>;
+  const tools = stackData.tools;
   if (tools?.length > 0) {
     console.log('\nDevelopment Tools:');
-    tools.forEach((tool: Record<string, unknown>) => {
-      const confidence = (tool.confidence as number)?.toFixed(1) || 'N/A';
+    tools.forEach((tool: ToolInfo) => {
+      const confidence = tool.confidence?.toFixed(1) || 'N/A';
       console.log(`   ${tool.name} - ${confidence}%`);
     });
   }
 }
 
 async function generateReports(
-  stackData: Record<string, unknown>, 
+  stackData: StackData, 
   analysisResult: StackResponse | undefined, 
   config: Config, 
   logger: ReturnType<typeof getLogger>
@@ -206,7 +256,7 @@ async function generateReports(
 
   const timestamp = generateTimestamp();
 
-  const jsonReport = {
+  const jsonReport: JsonReport = {
     timestamp,
     raw_stack_data: stackData,
     analysis_result: analysisResult,
@@ -225,14 +275,14 @@ async function generateReports(
 }
 
 function generateMarkdownReport(
-  stackData: Record<string, unknown>, 
+  stackData: StackData, 
   analysisResult: StackResponse | undefined, 
   timestamp: string
 ): string {
-  const primary = stackData?.primary as Record<string, unknown>;
-  const languages = stackData?.languages as Array<Record<string, unknown>>;
-  const frameworks = stackData?.frameworks as Array<Record<string, unknown>>;
-  const tools = stackData?.tools as Array<Record<string, unknown>>;
+  const primary = stackData?.primary;
+  const languages = stackData?.languages;
+  const frameworks = stackData?.frameworks;
+  const tools = stackData?.tools;
   
   const report = `# Technology Stack Analysis Report
 
@@ -243,21 +293,21 @@ function generateMarkdownReport(
 ## Stack Detection Results
 
 ### Primary Technology
-${primary ? `**${primary.name}** (${(primary.confidence as number)?.toFixed(1) || 'N/A'}% confidence)` : 'Not detected'}
+${primary ? `**${primary.name}** (${primary.confidence?.toFixed(1) || 'N/A'}% confidence)` : 'Not detected'}
 
 ### Languages Detected
-${languages?.map((lang: Record<string, unknown>) => 
-  `- **${lang.name}** ${lang.version ? `(${lang.version})` : ''} - ${(lang.confidence as number)?.toFixed(1) || 'N/A'}% confidence`
+${languages?.map((lang: LanguageInfo) => 
+  `- **${lang.name}** ${lang.version ? `(${lang.version})` : ''} - ${lang.confidence?.toFixed(1) || 'N/A'}% confidence`
 ).join('\n') || 'No languages detected'}
 
 ### Frameworks & Libraries
-${frameworks?.map((fw: Record<string, unknown>) => 
-  `- **${fw.name}** ${fw.version ? `v${fw.version}` : ''} - ${(fw.confidence as number)?.toFixed(1) || 'N/A'}% confidence`
+${frameworks?.map((fw: FrameworkInfo) => 
+  `- **${fw.name}** ${fw.version ? `v${fw.version}` : ''} - ${fw.confidence?.toFixed(1) || 'N/A'}% confidence`
 ).join('\n') || 'No frameworks detected'}
 
 ### Development Tools
-${tools?.map((tool: Record<string, unknown>) => 
-  `- **${tool.name}** - ${(tool.confidence as number)?.toFixed(1) || 'N/A'}% confidence`
+${tools?.map((tool: ToolInfo) => 
+  `- **${tool.name}** - ${tool.confidence?.toFixed(1) || 'N/A'}% confidence`
 ).join('\n') || 'No tools detected'}
 
 ${analysisResult ? `## AI Analysis Results

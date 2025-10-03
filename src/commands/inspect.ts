@@ -19,6 +19,7 @@ interface InspectOptions {
 }
 
 interface PromptContext {
+  [key: string]: unknown;
   projectName: string;
   timestamp: string;
   userLanguage: string;
@@ -27,72 +28,147 @@ interface PromptContext {
   analysisDepth: string;
 }
 
-interface InspectResponse {
-  summary: {
-    primaryLanguage: string;
-    projectType: string;
-    complexity: string;
-    maturityLevel: string;
-    ragReadiness: string;
-    totalFiles: number;
-  };
-  languages: Array<{
-    name: string;
-    files: number;
-    confidence: number;
-  }>;
-  frameworks: Array<{
-    name: string;
-    language: string;
-    version?: string;
-    category: string;
-  }>;
-  packageManagers: Array<{
-    name: string;
-    configFile: string;
-    dependenciesCount?: number;
-  }>;
-  ragOptimization: {
-    directoryStructure: {
-      includePaths: string[];
-      excludePaths: string[];
-    };
-    documentationFiles: {
-      discoveredPaths: string[];
-      recommendedPaths: string[];
-      chunkingStrategy: string;
-      recommendedChunkSize: number;
-      recommendedChunkOverlap: number;
-    };
-    chunkingStrategy: string;
-    recommendedIndexingConfig: {
-      chunkSize: number;
-      chunkOverlap: number;
-    };
-    estimatedIndexSize: string;
-  };
-  recommendations: {
-    modernization: string[];
-    security: string[];
-    performance: string[];
-    tooling: string[];
-    documentation: string[];
-  };
-  metadata: {
-    projectName: string;
-    version: string;
-    confidence: number;
-  };
+interface LanguageInfo {
+  name: string;
+  files: number;
+  confidence: number;
 }
 
+interface FrameworkInfo {
+  name: string;
+  language: string;
+  version?: string;
+  category: string;
+}
+
+interface PackageManagerInfo {
+  name: string;
+  configFile: string;
+  dependenciesCount?: number;
+}
+
+interface DirectoryStructure {
+  includePaths: string[];
+  excludePaths: string[];
+}
+
+interface DocumentationFiles {
+  discoveredPaths: string[];
+  recommendedPaths: string[];
+  chunkingStrategy: string;
+  recommendedChunkSize: number;
+  recommendedChunkOverlap: number;
+}
+
+interface IndexingConfig {
+  chunkSize: number;
+  chunkOverlap: number;
+}
+
+interface RagOptimization {
+  directoryStructure: DirectoryStructure;
+  documentationFiles: DocumentationFiles;
+  chunkingStrategy: string;
+  recommendedIndexingConfig: IndexingConfig;
+  estimatedIndexSize: string;
+}
+
+interface ProjectSummary {
+  primaryLanguage: string;
+  projectType: string;
+  complexity: string;
+  maturityLevel: string;
+  ragReadiness: string;
+  totalFiles: number;
+}
+
+interface Recommendations {
+  modernization: string[];
+  security: string[];
+  performance: string[];
+  tooling: string[];
+  documentation: string[];
+}
+
+interface ProjectMetadata {
+  projectName: string;
+  version: string;
+  confidence: number;
+}
+
+interface InspectResponse {
+  summary: ProjectSummary;
+  languages: LanguageInfo[];
+  frameworks: FrameworkInfo[];
+  packageManagers: PackageManagerInfo[];
+  ragOptimization: RagOptimization;
+  recommendations: Recommendations;
+  metadata: ProjectMetadata;
+}
+
+interface ProjectStructure {
+  directories: string[];
+  files: string[];
+  configFiles: string[];
+  sourceFiles: string[];
+  documentationFiles: string[];
+  sensitiveFiles: string[];
+  totalFiles: number;
+  totalDirectories: number;
+  droppedCounts: DroppedCounts;
+}
+
+interface DroppedCounts {
+  files: number;
+  directories: number;
+  configFiles: number;
+  sourceFiles: number;
+  documentationFiles: number;
+  sensitiveFiles: number;
+  totalDropped: number;
+}
+
+interface SampledResult {
+  sampled: string[];
+  dropped: number;
+}
+
+interface ParsedVersions {
+  javascript: Record<string, string | null>;
+  python: Record<string, string>;
+  java: Record<string, string>;
+  go: Record<string, string>;
+  rust: Record<string, string>;
+}
+
+interface EnhancedStackData {
+  parsedVersions: ParsedVersions;
+  [key: string]: unknown;
+}
+
+interface ChunkingConfig {
+  codeChunkSize: number;
+  codeChunkOverlap: number;
+  docChunkSize: number;
+  docChunkOverlap: number;
+}
+
+interface RealRagConfig {
+  directoryStructure: DirectoryStructure;
+  documentationFiles: DocumentationFiles;
+  filePatterns: { exclude: string[] };
+  recommendedIndexingConfig: IndexingConfig;
+  chunkingStrategy: string;
+  priorityFiles: string[];
+  estimatedIndexSize: string;
+}
+
+
 const SENSITIVE_PATTERNS = [
-  // Environment and secrets
   '.env*',
   '*.env',
   '.environment',
   '*.environment',
-
-  // Security files
   '*.pem',
   '*.key',
   '*.crt',
@@ -104,8 +180,6 @@ const SENSITIVE_PATTERNS = [
   'id_dsa*',
   'id_ecdsa*',
   'id_ed25519*',
-
-  // Configuration with secrets
   'secrets.*',
   'credentials.*',
   'auth.*',
@@ -114,33 +188,23 @@ const SENSITIVE_PATTERNS = [
   'config/production.*',
   'docker-compose*.prod.yml',
   'docker-compose.production.yml',
-
-  // Build and cache directories that might contain sensitive data
   '**/coverage/**',
   '**/.pytest_cache/**',
   '**/.gradle/**',
   '**/logs/**',
   '**/log/**',
   '**/*.log',
-
-  // Backup files
   '*.bak',
   '*.backup',
   '*.old',
   '*.orig',
-
-  // Database files
   '*.db',
   '*.sqlite',
   '*.sqlite3',
   'database.yml',
-
-  // Cloud provider configs
   '.aws/credentials',
   '.azure/**',
   '.gcloud/**',
-
-  // IDE temp files that might contain sensitive info
   '*.swp',
   '*.swo',
   '*~',
@@ -148,7 +212,6 @@ const SENSITIVE_PATTERNS = [
 ];
 
 const CONFIG_PATTERNS = [
-  // JS/TS
   'package.json',
   'package-lock.json',
   'yarn.lock',
@@ -162,35 +225,27 @@ const CONFIG_PATTERNS = [
   'next.config.{js,ts}',
   'nuxt.config.{js,ts}',
   'svelte.config.{js,ts}',
-  // Python
   'pyproject.toml',
   'requirements*.txt',
   'Pipfile*',
   'setup.{py,cfg}',
   'tox.ini',
   'pytest.ini',
-  // Java
   'pom.xml',
   'build.gradle*',
   'settings.gradle*',
-  // .NET
   '*.csproj',
   '*.sln',
   '*.vbproj',
   '*.fsproj',
   'Directory.*.props',
-  // Ruby
   'Gemfile*',
   'Rakefile',
-  // Go
   'go.{mod,sum,work}',
-  // Rust
   'Cargo.{toml,lock}',
-  // PHP
   'composer.{json,lock}',
   'phpunit.xml',
   'artisan',
-  // General
   '.env*',
   'docker-compose*.yml',
   'Dockerfile*',
@@ -200,7 +255,6 @@ const CONFIG_PATTERNS = [
 ];
 
 const DOCUMENTATION_PATTERNS = [
-  // Main documentation files
   'README*',
   'readme*',
   'README.md',
@@ -212,8 +266,6 @@ const DOCUMENTATION_PATTERNS = [
   'HISTORY.md',
   'RELEASES.md',
   'NEWS.md',
-
-  // License and legal
   'LICENSE*',
   'LICENCE*',
   'COPYING*',
@@ -221,16 +273,12 @@ const DOCUMENTATION_PATTERNS = [
   'NOTICE*',
   'AUTHORS*',
   'CONTRIBUTORS*',
-
-  // Project documentation
   'CONTRIBUTING*',
   'CONTRIBUTING.md',
   'CODE_OF_CONDUCT*',
   'SECURITY*',
   'SUPPORT*',
   'GOVERNANCE*',
-
-  // API and technical docs
   'API.md',
   'api.md',
   'INSTALL*',
@@ -245,8 +293,6 @@ const DOCUMENTATION_PATTERNS = [
   'UPGRADE*',
   'FAQ*',
   'TROUBLESHOOTING*',
-
-  // Directory patterns for documentation
   'docs/**/*.md',
   'doc/**/*.md',
   'documentation/**/*.md',
@@ -256,22 +302,16 @@ const DOCUMENTATION_PATTERNS = [
   'examples/**/*.md',
   'samples/**/*.md',
   'manual/**/*.md',
-
-  // Alternative formats
   'docs/**/*.rst',
   'docs/**/*.txt',
   'docs/**/*.adoc',
   'docs/**/*.asciidoc',
   'docs/**/*.org',
-
-  // Markdown files in common locations
   '*.md',
   'src/**/*.md',
   'lib/**/*.md',
   '.github/**/*.md',
   '.gitlab/**/*.md',
-
-  // Code documentation
   'ARCHITECTURE*',
   'DESIGN*',
   'SPECIFICATION*',
@@ -281,7 +321,7 @@ const DOCUMENTATION_PATTERNS = [
   'STYLE_GUIDE*',
 ];
 
-// Zod schema for response validation
+
 const InspectSchema = z
   .object({
     metadata: z.object({
@@ -331,12 +371,17 @@ function assertInspectResponse(obj: unknown): InspectResponse {
   return obj as InspectResponse;
 }
 
-function parsePackageJsonVersions(packagePath: string) {
+function parsePackageJsonVersions(
+  packagePath: string
+): Record<string, string | null> {
   try {
     const content = fs.readFileSync(packagePath, 'utf-8');
-    const pkg = JSON.parse(content);
+    const pkg = JSON.parse(content) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
     const deps = { ...pkg.dependencies, ...pkg.devDependencies };
-    const pick = (name: string) => deps?.[name] || null;
+    const pick = (name: string): string | null => deps?.[name] || null;
 
     return {
       react: pick('react'),
@@ -360,7 +405,7 @@ function parsePackageJsonVersions(packagePath: string) {
   }
 }
 
-function parsePythonVersions(projectPath: string) {
+function parsePythonVersions(projectPath: string): Record<string, string> {
   const versions: Record<string, string> = {};
 
   const pyprojectPath = path.join(projectPath, 'pyproject.toml');
@@ -397,7 +442,7 @@ function parsePythonVersions(projectPath: string) {
   return versions;
 }
 
-function parseJavaVersions(projectPath: string) {
+function parseJavaVersions(projectPath: string): Record<string, string> {
   const versions: Record<string, string> = {};
 
   const pomPath = path.join(projectPath, 'pom.xml');
@@ -423,7 +468,7 @@ function parseJavaVersions(projectPath: string) {
   return versions;
 }
 
-function parseGoVersions(projectPath: string) {
+function parseGoVersions(projectPath: string): Record<string, string> {
   const goModPath = path.join(projectPath, 'go.mod');
   if (!fs.existsSync(goModPath)) return {};
 
@@ -448,7 +493,7 @@ function parseGoVersions(projectPath: string) {
   }
 }
 
-function parseRustVersions(projectPath: string) {
+function parseRustVersions(projectPath: string): Record<string, string> {
   const cargoPath = path.join(projectPath, 'Cargo.toml');
   if (!fs.existsSync(cargoPath)) return {};
 
@@ -472,10 +517,13 @@ function parseRustVersions(projectPath: string) {
   }
 }
 
-function generateRealRagConfig(structure: Record<string, unknown>, config?: Record<string, unknown>): Record<string, unknown> {
+function generateRealRagConfig(
+  structure: ProjectStructure,
+  config: Config
+): RealRagConfig {
   const realIncludePaths = detectRealIncludePaths(structure);
-  const realExcludes = mergeExcludes(config || {}, null);
-  const documentationFiles = (structure?.documentationFiles as string[]) || [];
+  const realExcludes = mergeExcludes(config, null);
+  const documentationFiles = structure.documentationFiles || [];
   const discoveredDocPaths = documentationFiles.slice(0, 30);
   const recommendedDocPaths = generateRecommendedDocPaths(documentationFiles);
   const chunkingConfig = calculateRealChunkingConfig(structure);
@@ -505,11 +553,8 @@ function generateRealRagConfig(structure: Record<string, unknown>, config?: Reco
   };
 }
 
-/**
- * Detecta caminhos de inclusão reais baseados na estrutura do projeto
- */
-function detectRealIncludePaths(structure: Record<string, unknown>): string[] {
-  const directories = (structure?.directories as string[]) || [];
+function detectRealIncludePaths(structure: ProjectStructure): string[] {
+  const directories = structure.directories || [];
   const commonSourceDirs = [
     'src',
     'lib',
@@ -524,9 +569,8 @@ function detectRealIncludePaths(structure: Record<string, unknown>): string[] {
 
   const realPaths: string[] = [];
 
-  // Detectar diretórios de código fonte reais
   for (const dir of directories) {
-    const dirName = dir.split('/')[0]; // Pegar apenas o primeiro nível
+    const dirName = dir.split('/')[0];
     if (
       commonSourceDirs.includes(dirName) ||
       commonDocDirs.includes(dirName) ||
@@ -538,25 +582,20 @@ function detectRealIncludePaths(structure: Record<string, unknown>): string[] {
     }
   }
 
-  // Fallback: se não encontrou nenhum, usar estrutura descoberta
   if (realPaths.length === 0) {
     const topLevelDirs = directories
       .map((d: string) => d.split('/')[0])
       .filter((d: string) => !d.startsWith('.') && d !== 'node_modules')
-      .slice(0, 5); // Máximo 5 diretórios
-    realPaths.push(...(Array.from(new Set(topLevelDirs)) as string[]));
+      .slice(0, 5);
+    realPaths.push(...Array.from(new Set(topLevelDirs)));
   }
 
   return realPaths.length > 0 ? realPaths : ['.'];
 }
 
-/**
- * Gera caminhos recomendados baseados na documentação descoberta
- */
 function generateRecommendedDocPaths(documentationFiles: string[]): string[] {
   const discoveredPaths = new Set<string>();
 
-  // Adicionar caminhos baseados nos arquivos descobertos
   for (const file of documentationFiles) {
     const dir = path.dirname(file);
     if (dir !== '.') {
@@ -567,7 +606,6 @@ function generateRecommendedDocPaths(documentationFiles: string[]): string[] {
     }
   }
 
-  // Adicionar padrões comuns apenas se encontrados na estrutura real
   const commonPatterns = ['README.md', 'CHANGELOG.md', 'CONTRIBUTING.md'];
   for (const pattern of commonPatterns) {
     if (
@@ -582,17 +620,10 @@ function generateRecommendedDocPaths(documentationFiles: string[]): string[] {
   return Array.from(discoveredPaths);
 }
 
-/**
- * Calcula configuração de chunking baseada no tamanho real do projeto
- */
-function calculateRealChunkingConfig(structure: Record<string, unknown>): Record<string, unknown> {
-  const totalFiles = (structure?.totalFiles as number) || 0;
-  const sourceFiles = ((structure?.sourceFiles as string[])?.length) || 0;
-  const docFiles = ((structure?.documentationFiles as string[])?.length) || 0;
+function calculateRealChunkingConfig(structure: ProjectStructure): ChunkingConfig {
+  const totalFiles = structure.totalFiles || 0;
 
-  // Configuração adaptativa baseada no tamanho real
   if (totalFiles > 1000) {
-    // Projeto grande
     return {
       codeChunkSize: 1200,
       codeChunkOverlap: 200,
@@ -600,7 +631,6 @@ function calculateRealChunkingConfig(structure: Record<string, unknown>): Record
       docChunkOverlap: 300,
     };
   } else if (totalFiles > 100) {
-    // Projeto médio
     return {
       codeChunkSize: 1000,
       codeChunkOverlap: 150,
@@ -608,7 +638,6 @@ function calculateRealChunkingConfig(structure: Record<string, unknown>): Record
       docChunkOverlap: 250,
     };
   } else {
-    // Projeto pequeno
     return {
       codeChunkSize: 800,
       codeChunkOverlap: 120,
@@ -623,11 +652,10 @@ function calculateRealChunkingConfig(structure: Record<string, unknown>): Record
  */
 function detectRealPriorityFiles(
   documentationFiles: string[],
-  structure: Record<string, unknown>
+  structure: ProjectStructure
 ): string[] {
   const priorities: string[] = [];
 
-  // Priorizar arquivos de documentação descobertos
   const importantDocs = documentationFiles.filter((file) => {
     const name = file.toLowerCase();
     return (
@@ -641,11 +669,9 @@ function detectRealPriorityFiles(
 
   priorities.push(...importantDocs.slice(0, 5));
 
-  // Adicionar padrões de documentação descobertos
-  const docDirs =
-    ((structure?.directories as string[]) || []).filter(
-      (d: string) => d.includes('docs') || d.includes('documentation')
-    );
+  const docDirs = (structure.directories || []).filter(
+    (d: string) => d.includes('docs') || d.includes('documentation')
+  );
 
   for (const dir of docDirs.slice(0, 3)) {
     priorities.push(`${dir}/**/*.md`);
@@ -654,12 +680,9 @@ function detectRealPriorityFiles(
   return priorities;
 }
 
-/**
- * Calcula estimativa real do tamanho do índice
- */
-function calculateRealIndexSize(structure: Record<string, unknown>): string {
-  const totalFiles = (structure?.totalFiles as number) || 0;
-  const sourceFiles = ((structure?.sourceFiles as string[])?.length) || 0;
+function calculateRealIndexSize(structure: ProjectStructure): string {
+  const totalFiles = structure.totalFiles || 0;
+  const sourceFiles = structure.sourceFiles?.length || 0;
 
   if (totalFiles > 2000 || sourceFiles > 500) {
     return '~large';
@@ -674,7 +697,7 @@ export function inspectCommand(): Command {
   const cmd = new Command('inspect');
 
   cmd
-    .description('Complete project analysis with stack detection and RAG optimization recommendations')
+    .description('Project analysis with stack detection and RAG optimization v1.0.0')
     .option('-o, --output <file>', 'Output file path')
     .option('--include-tests', 'Include test files in analysis', false)
     .option('-f, --format <type>', 'Output format: human|json', 'human')
@@ -694,8 +717,8 @@ export function inspectCommand(): Command {
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
-        logger.error(`Inspect operation failed: ${errorMessage}`);
-        console.log(`Inspect operation failed: ${errorMessage}`);
+        logger.error(`❌ Inspect operation failed: ${errorMessage}`);
+        console.log(`❌ Inspect operation failed: ${errorMessage}`);
         process.exit(1);
       }
     });
@@ -762,7 +785,7 @@ async function processInspectOperation(options: InspectOptions): Promise<void> {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     logger.warn(`Response validation failed, applying defaults: ${errorMessage}`);
-    const realRag = generateRealRagConfig(projectStructure as unknown as Record<string, unknown>, config as unknown as Record<string, unknown>);
+    const realRag = generateRealRagConfig(projectStructure, config);
     result = {
       ...result,
       ragOptimization: {
@@ -782,7 +805,6 @@ async function processInspectOperation(options: InspectOptions): Promise<void> {
   logger.info('Project inspection completed successfully');
 }
 
-// Function to read and parse .gitignore patterns
 function parseGitignore(): string[] {
   const gitignorePath = path.join(process.cwd(), '.gitignore');
   if (!fs.existsSync(gitignorePath)) {
@@ -796,7 +818,6 @@ function parseGitignore(): string[] {
       .map((line) => line.trim())
       .filter((line) => line && !line.startsWith('#'))
       .map((line) => {
-        // Convert gitignore patterns to glob patterns
         if (line.endsWith('/')) {
           return `${line}**`;
         }
@@ -810,7 +831,7 @@ function parseGitignore(): string[] {
   }
 }
 
-async function collectProjectStructure(): Promise<object> {
+async function collectProjectStructure(): Promise<ProjectStructure> {
   const logger = getLogger();
   const cwd = process.cwd();
 
@@ -981,7 +1002,7 @@ async function collectProjectStructure(): Promise<object> {
   };
 }
 
-function sampleFilesByDir(files: string[], perDir = 50) {
+function sampleFilesByDir(files: string[], perDir: number = 50): SampledResult {
   const buckets = new Map<string, string[]>();
   for (const f of files) {
     const dir = path.dirname(f);
@@ -1128,41 +1149,38 @@ async function saveResults(
   }
 
   const timestamp = generateTimestamp();
-  logger.info(`⏰ Generated timestamp: ${timestamp}`);
+  logger.info(`Generated timestamp: ${timestamp}`);
 
-  // JSON files: only save without timestamp for consistent access
   const ragJsonFile = path.join(cliaDir, `project-inspection.json`);
-  logger.info(`💾 Saving JSON file: ${ragJsonFile}`);
+  logger.info(`Saving JSON file: ${ragJsonFile}`);
 
   try {
     fs.writeFileSync(ragJsonFile, JSON.stringify(result, null, 2));
-    logger.info('✅ JSON file saved successfully');
+    logger.info('JSON file saved successfully');
   } catch (error) {
-    logger.error(`❌ Error saving JSON file: ${error}`);
-    throw error;
+    throw new Error(`Failed to save JSON file: ${error}`);
   }
 
   if (options.format === 'human' || !options.format) {
-    logger.info('📝 Generating human report...');
+    logger.info('Generating human report');
 
     try {
       const humanReport = generateHumanReport(result, config);
-      logger.info(`✅ Human report generated (${humanReport.length} chars)`);
+      logger.info(`Human report generated (${humanReport.length} chars)`);
 
       const humanReportFile =
         options.output || path.join(reportsDir, `${timestamp}_inspect.md`);
-      logger.info(`💾 Saving human report: ${humanReportFile}`);
+      logger.info(`Saving human report: ${humanReportFile}`);
 
       fs.writeFileSync(humanReportFile, humanReport);
-      logger.info('✅ Human report saved successfully');
+      logger.info('Human report saved successfully');
     } catch (error) {
-      logger.error(`❌ Failed to generate or save human report: ${error}`);
-      // Don't throw, just warn - JSON is the important part
-      logger.warn(`⚠️ Continuing without human report`);
+      logger.warn(`Failed to generate human report: ${error}`);
+      logger.warn('Continuing without human report');
     }
   }
 
-  logger.info('✅ saveResults function completed');
+  logger.info('Project inspection results saved successfully');
 }
 
 function generateHumanReport(

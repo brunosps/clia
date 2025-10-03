@@ -21,6 +21,7 @@ interface SecurityScanOptions {
 }
 
 interface PromptContext {
+  [key: string]: unknown;
   projectName: string;
   mcpContext: string;
   mcpSecurityData: string;
@@ -30,54 +31,88 @@ interface PromptContext {
   userLanguage: string;
 }
 
+interface Vulnerability {
+  title: string;
+  description: string;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  file?: string;
+  solution: string;
+  confidence: number;
+}
+
+interface VulnerablePackage {
+  package: string;
+  version: string;
+  vulnerability: string;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+}
+
+interface Dependencies {
+  total_analyzed: number;
+  vulnerable_packages: VulnerablePackage[];
+}
+
 interface SecurityResponse {
   security_report: string;
   security_score: number;
-  vulnerabilities: Array<{
-    title: string;
-    description: string;
-    severity: 'critical' | 'high' | 'medium' | 'low';
-    file?: string;
-    solution: string;
-    confidence: number;
-  }>;
-  dependencies: {
-    total_analyzed: number;
-    vulnerable_packages: Array<{
-      package: string;
-      version: string;
-      vulnerability: string;
-      severity: 'critical' | 'high' | 'medium' | 'low';
-    }>;
-  };
+  vulnerabilities: Vulnerability[];
+  dependencies: Dependencies;
   recommendations: string[];
   confidence: number;
   language: string;
+}
+
+interface SecurityRelevantData {
+  configFiles: string[];
+  securityIssues: string[];
+  vulnerableDependencies: VulnerableDependency[];
+  architecture: Architecture;
+}
+
+interface VulnerableDependency {
+  package?: string;
+  version?: string;
+  vulnerability?: string;
+  severity?: string;
+  [key: string]: unknown;
+}
+
+interface Architecture {
+  type?: string;
+  [key: string]: unknown;
+}
+
+interface MCPSecurityData {
+  semgrep: SemgrepReport | null;
+  trivy: TrivyReport | null;
+  available: {
+    semgrep: boolean;
+    trivy: boolean;
+  };
+}
+
+interface SeverityMapping {
+  low: string[];
+  medium: string[];
+  high: string[];
+  critical: string[];
+}
+
+interface SeverityCount {
+  [key: string]: number;
 }
 
 export function securityScanCommand(): Command {
   const command = new Command('security-scan');
 
   command
-    .description('Security vulnerability detection with MCP integration for Semgrep and Trivy scanners')
-    .option(
-      '-t, --target <path>',
-      'Target directory (default: current project)',
-      '.'
-    )
+    .description('Security vulnerability detection with Semgrep and Trivy via MCP v1.0.0')
+    .option('-t, --target <path>', 'Target directory', '.')
     .option('-o, --output <file>', 'Output file path')
-    .option(
-      '-s, --severity <level>',
-      'Minimum severity: low|medium|high|critical',
-      'medium'
-    )
-    .option(
-      '-f, --format <format>',
-      'Output format: json|markdown',
-      'markdown'
-    )
-    .option('--include-tests', 'Include test files in analysis', false)
-    .option('--trivy', 'Enable Trivy scanner for dependencies', false)
+    .option('-s, --severity <level>', 'Minimum severity level', 'medium')
+    .option('-f, --format <format>', 'Output format', 'markdown')
+    .option('--include-tests', 'Include test files', false)
+    .option('--trivy', 'Enable Trivy scanner', false)
     .action(async (options) => {
       const logger = getLogger();
       try {
@@ -86,8 +121,8 @@ export function securityScanCommand(): Command {
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
-        logger.error(`Security scan failed: ${errorMessage}`);
-        console.log(`Security scan failed: ${errorMessage}`);
+        logger.error(`❌ Security scan failed: ${errorMessage}`);
+        console.log(`❌ Security scan failed: ${errorMessage}`);
         process.exit(1);
       }
     });
@@ -162,18 +197,13 @@ async function processSecurityScanOperation(
   logger.info('Security analysis completed successfully');
 }
 
-async function collectSecurityRelevantData(): Promise<{
-  configFiles: string[];
-  securityIssues: string[];
-  vulnerableDependencies: Record<string, unknown>[];
-  architecture: Record<string, unknown>;
-}> {
+async function collectSecurityRelevantData(): Promise<SecurityRelevantData> {
   const logger = getLogger();
-  const securityData = {
-    configFiles: [] as string[],
-    securityIssues: [] as string[],
-    vulnerableDependencies: [] as Record<string, unknown>[],
-    architecture: {} as Record<string, unknown>,
+  const securityData: SecurityRelevantData = {
+    configFiles: [],
+    securityIssues: [],
+    vulnerableDependencies: [],
+    architecture: {},
   };
 
   try {
@@ -225,7 +255,9 @@ async function collectSecurityRelevantData(): Promise<{
           ...stack.analysis_result.recommendations.security.map((rec: unknown) =>
             typeof rec === 'string'
               ? rec
-              : (rec as Record<string, unknown>).solution || (rec as Record<string, unknown>).issue || JSON.stringify(rec)
+              : (rec as { solution?: string; issue?: string }).solution || 
+                (rec as { solution?: string; issue?: string }).issue || 
+                JSON.stringify(rec)
           )
         );
       }
@@ -235,9 +267,7 @@ async function collectSecurityRelevantData(): Promise<{
       `Security context: ${securityData.configFiles.length} config files, ${securityData.securityIssues.length} known issues`
     );
   } catch (error) {
-    logger.warn(
-      'Could not load security context from analysis files'
-    );
+    logger.warn('Could not load security context from analysis files');
   }
 
   return securityData;
@@ -245,20 +275,13 @@ async function collectSecurityRelevantData(): Promise<{
 
 async function collectMCPSecurityData(
   options: SecurityScanOptions
-): Promise<{
-  semgrep: SemgrepReport | null;
-  trivy: TrivyReport | null;
-  available: {
-    semgrep: boolean;
-    trivy: boolean;
-  };
-}> {
+): Promise<MCPSecurityData> {
   const logger = getLogger();
   const mcpClient = McpClient.fromConfig();
 
-  const mcpData = {
-    semgrep: null as SemgrepReport | null,
-    trivy: null as TrivyReport | null,
+  const mcpData: MCPSecurityData = {
+    semgrep: null,
+    trivy: null,
     available: {
       semgrep: false,
       trivy: false,
@@ -272,19 +295,18 @@ async function collectMCPSecurityData(
     if (semgrepResult?.findings) {
       const minSeverity = options.severity || 'medium';
       
-      // Map user severity to Semgrep severity levels
-      const severityMapping = {
-        'low': ['INFO', 'WARNING', 'ERROR'],
-        'medium': ['WARNING', 'ERROR'],
-        'high': ['ERROR'],
-        'critical': ['ERROR'] // Semgrep doesn't have CRITICAL, treat as ERROR
+      const severityMapping: SeverityMapping = {
+        low: ['INFO', 'WARNING', 'ERROR'],
+        medium: ['WARNING', 'ERROR'],
+        high: ['ERROR'],
+        critical: ['ERROR']
       };
       
-      const allowedSeverities = severityMapping[minSeverity as keyof typeof severityMapping] || ['WARNING', 'ERROR'];
+      const allowedSeverities = severityMapping[minSeverity as keyof SeverityMapping] || ['WARNING', 'ERROR'];
       
       const filteredFindings = semgrepResult.findings
         .filter(f => allowedSeverities.includes(f.severity))
-        .slice(0, 50); // Limit to 50 most relevant findings
+        .slice(0, 50);
       
       mcpData.semgrep = {
         ...semgrepResult,
@@ -363,7 +385,6 @@ async function saveResults(
     fs.writeFileSync(options.output, outputContent, 'utf-8');
     logger.info(`Security report saved: ${options.output}`);
   } else {
-    // Always save JSON in .clia for integration (no timestamp)
     const integrationJsonFile = path.join(cliaDir, 'security-scan.json');
     fs.writeFileSync(
       integrationJsonFile,
@@ -371,7 +392,6 @@ async function saveResults(
       'utf-8'
     );
 
-    // Save timestamped markdown report in configured reports directory
     const mdFile = path.join(reportsDir, `${timestamp}_security-scan.md`);
     fs.writeFileSync(mdFile, generateMarkdownReport(result), 'utf-8');
 
@@ -445,12 +465,12 @@ function displaySecuritySummary(result: SecurityResponse): void {
   console.log(`Confidence: ${(result.confidence * 100).toFixed(1)}%`);
 
   if (result.vulnerabilities.length > 0) {
-    const severityCounts = result.vulnerabilities.reduce(
+    const severityCounts = result.vulnerabilities.reduce<SeverityCount>(
       (acc, vuln) => {
         acc[vuln.severity] = (acc[vuln.severity] || 0) + 1;
         return acc;
       },
-      {} as Record<string, number>
+      {}
     );
 
     console.log('\nVulnerabilities by Severity:');
