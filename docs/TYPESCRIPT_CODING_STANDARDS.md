@@ -80,8 +80,8 @@ interface UserResponse {
   metadata: Record<string, unknown>;
 }
 
-// ✅ Good - Import with .js extension
-import { UserService } from './services/user.js';
+// ✅ Good - Import extension
+import { UserService } from './services/user';
 
 // ❌ Bad - Using any type
 const userData: any = response.data;

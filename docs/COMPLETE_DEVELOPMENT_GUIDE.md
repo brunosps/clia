@@ -247,13 +247,90 @@ interface PromptContext {
 - ✅ Sem `console.log/console.error` exceto resultado final
 
 ### comando `configure`
-**Descrição**: 🎛️ Configuração de provedores LLM e gerenciamento de configurações
+**Descrição**: Interactive LLM provider configuration v1.0.0
 **Uso**: `clia configure`
 **Opções**:
-- `--backup`: 💾 Criar backup da configuração atual antes de modificar
-- `--verbose`: 📊 Mostrar detalhes avançados da configuração
+- `--backup`: Criar backup da configuração atual antes de modificar
+- `--verbose`: Mostrar detalhes avançados da configuração
 
 **Funcionalidade**: Interface interativa para configuração completa de provedores LLM, incluindo configuração de tiers, teste de conectividade e sugestões OpenRouter para modelos gratuitos e pagos.
+
+**Implementação v1.0.0 (Comando Config-Only)**:
+- **Zero comentários**: Código limpo sem comentários inline
+- **Tipagem completa**: Todas as interfaces e tipos explícitos (zero `any`)
+- **console.log para UI**: Comunicação com usuário via console.log (comando interativo)
+- **Sem Logger**: Não usa logger (comando config-only, sem operações LLM)
+- **Sem LLM**: Não usa execPrompt ou makeLLMForTier (config puro)
+- **Menu Interativo**: 7 opções com readline para input
+- **Validação de Config**: Testa conectividade e valida configurações
+- **OpenRouter API**: Integração com API para sugestões de modelos
+
+**Interfaces TypeScript**:
+```typescript
+interface ProviderConfig {
+  apiKeyEnv: string;
+  endpoint: string;
+  models?: string[];
+}
+
+interface TierConfig {
+  provider: string;
+  model: string;
+}
+
+interface ProjectConfig {
+  name?: string;
+  version?: string;
+  [key: string]: unknown;
+}
+
+interface ReportsConfig {
+  [key: string]: unknown;
+}
+
+interface LoggingConfig {
+  [key: string]: unknown;
+}
+
+interface McpConfig {
+  [key: string]: unknown;
+}
+
+interface ConfigData {
+  language?: string;
+  project?: ProjectConfig;
+  llm?: {
+    providers?: Record<string, ProviderConfig>;
+    tiers?: Record<string, TierConfig>;
+  };
+  reports?: ReportsConfig;
+  logging?: LoggingConfig;
+  mcp?: McpConfig;
+}
+
+interface ConfigureOptions {
+  backup?: boolean;
+  verbose?: boolean;
+}
+```
+
+**Funcionalidades**:
+1. **Adicionar Provedor**: Configuração de OpenAI, Anthropic, DeepSeek, Ollama, Azure, OpenRouter, Abacus, Custom
+2. **Configurar Tiers**: Atribuição de provedores para premium, default, fast, embed
+3. **Remover Provedor**: Remoção com validação de uso em tiers
+4. **Visualização**: Exibição de provedores configurados e atribuições de tier
+5. **Teste de Conectividade**: Validação de chaves API e endpoints
+6. **Sugestões OpenRouter**: API integration para modelos free/pagos
+7. **Backup Automático**: Opcional via `--backup` flag
+
+**Padrões de Código v1.0.0**:
+- ✅ Description sucinta (50 chars)
+- ✅ console.log para UI (comando interativo)
+- ✅ Sem logger (config-only, sem LLM)
+- ✅ Zero `any` types (todas as tipagens explícitas)
+- ✅ Zero comentários no código
+- ✅ Sem emojis (remoção completa)
+- ✅ Sem temperaturas (sem execPrompt)
 
 ### comando `inspect`
 **Descrição**: Project analysis with stack detection and RAG optimization v1.0.0
