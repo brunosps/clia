@@ -1,7 +1,3 @@
-/**
- * Configure command v1.0.0 - Provider Configuration and Management
- */
-
 import fs from 'fs';
 import path from 'path';
 import { Command } from 'commander';
@@ -20,56 +16,75 @@ interface TierConfig {
   model: string;
 }
 
+interface ProjectConfig {
+  name?: string;
+  version?: string;
+  [key: string]: unknown;
+}
+
+interface ReportsConfig {
+  [key: string]: unknown;
+}
+
+interface LoggingConfig {
+  [key: string]: unknown;
+}
+
+interface McpConfig {
+  [key: string]: unknown;
+}
+
 interface ConfigData {
   language?: string;
-  project?: any;
+  project?: ProjectConfig;
   llm?: {
     providers?: Record<string, ProviderConfig>;
     tiers?: Record<string, TierConfig>;
   };
-  reports?: any;
-  logging?: any;
-  mcp?: any;
+  reports?: ReportsConfig;
+  logging?: LoggingConfig;
+  mcp?: McpConfig;
 }
 
-export async function runConfigureCommand(options: any = {}) {
-  console.log('🎛️ CLIA Configuração de Provedores v4.0.0');
+interface ConfigureOptions {
+  backup?: boolean;
+  verbose?: boolean;
+}
+
+export async function runConfigureCommand(options: ConfigureOptions = {}) {
+  console.log('CLIA Configuração de Provedores v1.0.0');
   console.log('Interface interativa para configuração completa de provedores LLM');
   console.log('');
 
-  // Enhanced configuration loading v4.0.0
   const configPath = findConfigFile();
   if (!configPath) {
-    console.log('❌ Erro: Nenhum arquivo de configuração encontrado.');
-    console.log('💡 Execute "clia install" primeiro para criar a configuração inicial.');
+    console.log('Erro: Nenhum arquivo de configuração encontrado.');
+    console.log('Dica: Execute "clia install" primeiro para criar a configuração inicial.');
     return;
   }
 
-  console.log(`📁 Carregando configuração de: ${configPath}`);
+  console.log(`Carregando configuração de: ${configPath}`);
   
-  // Create backup if requested
   if (options.backup) {
     const backupPath = `${configPath}.backup.${Date.now()}`;
     fs.copyFileSync(configPath, backupPath);
-    console.log(`💾 Backup criado em: ${backupPath}`);
+    console.log(`Backup criado em: ${backupPath}`);
   }
   
   const config = loadCurrentConfig(configPath);
   
-  // Show current providers with enhanced display
   showCurrentProviders(config, options.verbose);
   
-  // Enhanced main configuration menu v4.0.0
   while (true) {
     console.log('');
-    console.log('🎛️ **Opções de Configuração:**');
-    console.log('1. ➕ Adicionar novo provedor');
-    console.log('2. ⚙️ Configurar atribuições de tier');
-    console.log('3. ❌ Remover provedor');
-    console.log('4. 📊 Mostrar configuração atual');
-    console.log('5. 🔧 Testar conectividade');
-    console.log('6. 🤖 Sugestões OpenRouter (modelos free/pagos)');
-    console.log('7. 💾 Salvar e sair');
+    console.log('Opções de Configuração:');
+    console.log('1. Adicionar novo provedor');
+    console.log('2. Configurar atribuições de tier');
+    console.log('3. Remover provedor');
+    console.log('4. Mostrar configuração atual');
+    console.log('5. Testar conectividade');
+    console.log('6. Sugestões OpenRouter (modelos free/pagos)');
+    console.log('7. Salvar e sair');
     console.log('');
     
     const choice = await promptUser('Selecione uma opção (1-7): ');
@@ -95,10 +110,10 @@ export async function runConfigureCommand(options: any = {}) {
         break;
       case '7':
         saveConfiguration(config, configPath);
-        console.log('✅ Configuração salva com sucesso!');
+        console.log('Configuração salva com sucesso!');
         return;
       default:
-        console.log('❌ Opção inválida. Selecione 1-7.');
+        console.log('Opção inválida. Selecione 1-7.');
     }
   }
 }
@@ -131,23 +146,23 @@ function loadCurrentConfig(configPath: string): ConfigData {
 
 function showCurrentProviders(config: ConfigData, verbose: boolean = false) {
   console.log('');
-  console.log('📊 **Configuração Atual de Provedores:**');
+  console.log('**Configuração Atual de Provedores:**');
   console.log('==========================================');
   
   const providers = config.llm?.providers || {};
   if (Object.keys(providers).length === 0) {
-    console.log('❌ Nenhum provedor configurado.');
+    console.log('Nenhum provedor configurado.');
     return;
   }
   
   console.log('');
-  console.log('🔧 **Provedores:**');
+  console.log('**Provedores:**');
   Object.entries(providers).forEach(([name, provider]) => {
-    console.log(`  📍 ${name}:`);
-    console.log(`    🌐 Endpoint: ${provider.endpoint}`);
-    console.log(`    🔑 Chave API Environment: ${provider.apiKeyEnv}`);
+    console.log(`  ${name}:`);
+    console.log(`    Endpoint: ${provider.endpoint}`);
+    console.log(`    Chave API Environment: ${provider.apiKeyEnv}`);
     if (provider.models) {
-      console.log(`    🤖 Modelos: ${provider.models.join(', ')}`);
+      console.log(`    Modelos: ${provider.models.join(', ')}`);
     }
     if (verbose) {
       console.log(`    � Status: Configurado`);
@@ -155,80 +170,78 @@ function showCurrentProviders(config: ConfigData, verbose: boolean = false) {
   });
   
   console.log('');
-  console.log('⚙️ **Atribuições de Tier:**');
+  console.log('**Atribuições de Tier:**');
   const tiers = config.llm?.tiers || {};
   if (Object.keys(tiers).length === 0) {
-    console.log('❌ Nenhuma atribuição de tier configurada.');
+    console.log('Nenhuma atribuição de tier configurada.');
   } else {
     Object.entries(tiers).forEach(([tier, assignment]) => {
-      const emoji = tier === 'premium' ? '💎' : tier === 'default' ? '⚡' : '🔧';
-      console.log(`  ${emoji} ${tier}: ${assignment.provider} (${assignment.model})`);
+      console.log(`  ${tier}: ${assignment.provider} (${assignment.model})`);
     });
   }
 }
 
 async function testConnectivity(config: ConfigData) {
   console.log('');
-  console.log('🔧 **Teste de Conectividade:**');
+  console.log('**Teste de Conectividade:**');
   console.log('============================');
   
   const providers = config.llm?.providers || {};
   if (Object.keys(providers).length === 0) {
-    console.log('❌ Nenhum provedor configurado para testar.');
+    console.log('Nenhum provedor configurado para testar.');
     return;
   }
   
-  console.log('⏳ Testando conectividade com provedores...');
+  console.log('Testando conectividade com provedores...');
   
   for (const [name, provider] of Object.entries(providers)) {
     try {
-      console.log(`\n📡 Testando ${name}...`);
+      console.log(`\nTestando ${name}...`);
       
-      // Simple connectivity test (placeholder - would need actual implementation)
       const apiKey = process.env[provider.apiKeyEnv];
       if (!apiKey) {
-        console.log(`  ❌ Chave API não encontrada (${provider.apiKeyEnv})`);
+        console.log(`  Chave API não encontrada (${provider.apiKeyEnv})`);
         continue;
       }
       
-      console.log(`  ✅ Chave API configurada`);
-      console.log(`  🌐 Endpoint: ${provider.endpoint}`);
-      console.log(`  🤖 Modelos disponíveis: ${provider.models?.join(', ') || 'N/A'}`);
+      console.log(`  Chave API configurada`);
+      console.log(`  Endpoint: ${provider.endpoint}`);
+      console.log(`  Modelos disponíveis: ${provider.models?.join(', ') || 'N/A'}`);
       
     } catch (error) {
-      console.log(`  ❌ Erro ao testar ${name}: ${error}`);
+      console.log(`  Erro ao testar ${name}: ${error}`);
     }
   }
   
-  console.log('\n💡 **Nota:** Para testes completos de conectividade, use os comandos específicos do CLIA.');
+  console.log('\n**Nota:** Para testes completos de conectividade, use os comandos específicos do CLIA.');
 }
 
 async function addNewProvider(config: ConfigData) {
   console.log('');
-  console.log('➕ **Adicionar Novo Provedor**');
+  console.log('**Adicionar Novo Provedor**');
   console.log('=============================');
   
   const predefinedProviders = [
-    { name: 'openai', emoji: '🤖', desc: 'OpenAI (GPT models)' },
-    { name: 'anthropic', emoji: '🧠', desc: 'Anthropic (Claude models)' },
-    { name: 'deepseek', emoji: '🚀', desc: 'DeepSeek (Cost-effective)' },
-    { name: 'ollama', emoji: '🏠', desc: 'Ollama (Local models)' },
-    { name: 'azure', emoji: '☁️', desc: 'Azure OpenAI' },
-    { name: 'openrouter', emoji: '🌐', desc: 'OpenRouter (Multiple providers)' },
-    { name: 'abacus', emoji: '🧮', desc: 'Abacus.ai' },
-    { name: 'custom', emoji: '⚙️', desc: 'Custom provider' }
+    { name: 'openai', desc: 'OpenAI (GPT models)' },
+    { name: 'anthropic', desc: 'Anthropic (Claude models)' },
+    { name: 'deepseek', desc: 'DeepSeek (Cost-effective)' },
+    { name: 'ollama', desc: 'Ollama (Local models)' },
+    { name: 'azure', desc: 'Azure OpenAI' },
+    { name: 'openrouter', desc: 'OpenRouter (Multiple providers)' },
+    { name: 'abacus', desc: 'Abacus.ai' },
+    { name: 'custom', desc: 'Custom provider' }
   ];
   
-  console.log('📋 **Tipos de provedores disponíveis:**');
+  console.log('**Tipos de provedores disponíveis:**');
   predefinedProviders.forEach((provider, index) => {
-    console.log(`  ${index + 1}. ${provider.emoji} ${provider.name} - ${provider.desc}`);
+    console.log(`  ${index + 1}. ${provider.name} - ${provider.desc}`);
   });
   
   const choiceIndex = await promptUser('\nSelecione o tipo de provedor (1-8): ');
   const selectedIndex = parseInt(choiceIndex) - 1;
   
   if (selectedIndex < 0 || selectedIndex >= predefinedProviders.length) {
-    console.log('❌ Opção inválida.');
+    console.log('Opção inválida.');
     return;
   }
   
@@ -246,7 +259,6 @@ async function addNewProvider(config: ConfigData) {
     providerName = choice;
   }
   
-  // Check if provider already exists
   if (config.llm?.providers?.[providerName]) {
     console.log(`Provider "${providerName}" already exists.`);
     const overwrite = await promptYesNo('Do you want to overwrite it?');
@@ -255,17 +267,14 @@ async function addNewProvider(config: ConfigData) {
     }
   }
   
-  // Get provider configuration based on type
   const providerConfig = await getProviderConfiguration(providerName);
   if (!providerConfig) {
     return;
   }
   
-  // Initialize config structure if needed
   if (!config.llm) config.llm = {};
   if (!config.llm.providers) config.llm.providers = {};
   
-  // Add the new provider
   config.llm.providers[providerName] = providerConfig;
   
   console.log(`Provider "${providerName}" added successfully!`);
@@ -274,7 +283,6 @@ async function addNewProvider(config: ConfigData) {
 async function getProviderConfiguration(providerName: string): Promise<ProviderConfig | null> {
   const lowerName = providerName.toLowerCase();
   
-  // Pre-configured providers
   const preConfigured: Record<string, ProviderConfig> = {
     'openai': {
       apiKeyEnv: 'OPENAI_API_KEY',
@@ -340,7 +348,6 @@ async function getProviderConfiguration(providerName: string): Promise<ProviderC
     console.log(`Using pre-configured settings for ${providerName}`);
     const config = preConfigured[lowerName];
     
-    // Allow customization of endpoint for some providers
     if (lowerName === 'azure') {
       const customEndpoint = await promptUser('Azure OpenAI endpoint (or press Enter for default): ');
       if (customEndpoint.trim()) {
@@ -356,7 +363,6 @@ async function getProviderConfiguration(providerName: string): Promise<ProviderC
     return config;
   }
   
-  // Custom provider configuration
   console.log('Configuring custom provider...');
   
   const endpoint = await promptUser('API endpoint URL: ');
@@ -398,7 +404,6 @@ async function configureTiers(config: ConfigData) {
     return;
   }
   
-  // Fetch models dynamically for each provider
   console.log('\nSearching for available models...');
   const providerModels: { [key: string]: ProviderModels } = {};
   
@@ -412,12 +417,10 @@ async function configureTiers(config: ConfigData) {
     }
   }
   
-  // Providers that have native embedding support
   const embedAvailableProviders = providerNames.filter(p => 
     providerModels[p]?.hasEmbedding || ['openai', 'azureOpenAI', 'ollama'].includes(p)
   );
   
-  // Initialize tiers if needed
   if (!config.llm) config.llm = {};
   if (!config.llm.tiers) config.llm.tiers = {};
   
@@ -426,7 +429,6 @@ async function configureTiers(config: ConfigData) {
   for (const tier of tiers) {
     console.log(`\nConfiguring ${tier.toUpperCase()} tier:`);
     
-    // For embed, show warning if no providers with native embedding
     if (tier === 'embed') {
       if (embedAvailableProviders.length === 0) {
         console.log('  No providers with native embedding available.');
@@ -448,11 +450,9 @@ async function configureTiers(config: ConfigData) {
       tierProviders
     );
     
-    // Search for available models for selected provider
     const availableModels = providerModels[selectedProvider];
     
     if (availableModels && availableModels.models.length > 0) {
-      // Filter models by type (embedding or chat)
       let filteredModels = availableModels.models;
       if (tier === 'embed') {
         filteredModels = availableModels.models.filter(m => m.isEmbedding);
@@ -486,7 +486,6 @@ async function configureTiers(config: ConfigData) {
       }
     }
     
-    // Fallback for manual configuration if models not found
     const defaultModel = getDefaultModelForProvider(selectedProvider, tier);
     const selectedModel = await promptUser(`Model for ${tier} [${defaultModel}]: `) || defaultModel;
     
@@ -516,7 +515,6 @@ async function removeProvider(config: ConfigData) {
     providerNames
   );
   
-  // Check if provider is being used in any tier
   const tiers = config.llm?.tiers || {};
   const usedInTiers = Object.entries(tiers)
     .filter(([, assignment]) => assignment.provider === providerToRemove)
@@ -529,13 +527,11 @@ async function removeProvider(config: ConfigData) {
       return;
     }
     
-    // Remove from tiers
     usedInTiers.forEach(tier => {
       delete tiers[tier];
     });
   }
   
-  // Remove the provider
   delete providers[providerToRemove];
   
   console.log(`Provider "${providerToRemove}" removed successfully!`);
@@ -554,7 +550,6 @@ function saveConfiguration(config: ConfigData, configPath: string) {
   }
 }
 
-// Simple prompt utility (since we can't use readline in this context)
 async function promptUser(question: string): Promise<string> {
   return new Promise((resolve) => {
     const rl = readline.createInterface({
@@ -639,7 +634,6 @@ function getDefaultModelForProvider(provider: string, tier: string): string {
   return defaults[provider]?.[tier] || 'default-model';
 }
 
-// OpenRouter Model Interface
 interface OpenRouterModel {
   id: string;
   name: string;
@@ -654,19 +648,17 @@ interface OpenRouterModel {
   };
 }
 
-// OpenRouter API Response
 interface OpenRouterResponse {
   data: OpenRouterModel[];
 }
 
 async function configureOpenRouterSuggestions(config: ConfigData) {
   console.log('');
-  console.log('🤖 **Buscando sugestões da OpenRouter API...**');
+  console.log('**Buscando sugestões da OpenRouter API...**');
   console.log('Analisando modelos free e pagos para diferentes camadas de uso');
   console.log('');
 
   try {
-    // Fetch models from OpenRouter API
     const response = await fetch('https://openrouter.ai/api/v1/models');
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -675,10 +667,9 @@ async function configureOpenRouterSuggestions(config: ConfigData) {
     const data: OpenRouterResponse = await response.json();
     const models = data.data;
 
-    console.log(`✅ Encontrados ${models.length} modelos disponíveis na OpenRouter`);
+    console.log(`Encontrados ${models.length} modelos disponíveis na OpenRouter`);
     console.log('');
 
-    // Filter and categorize models
     const freeModels = models.filter(m => 
       parseFloat(m.pricing.prompt) === 0 && parseFloat(m.pricing.completion) === 0
     ).slice(0, 10); // Top 10 free models
@@ -690,7 +681,6 @@ async function configureOpenRouterSuggestions(config: ConfigData) {
         (parseFloat(b.pricing.prompt) + parseFloat(b.pricing.completion))
       ).slice(0, 15); // Top 15 cheapest paid models
 
-    // Display suggestions by tier
     console.log('🆓 **Modelos GRATUITOS recomendados:**');
     console.log('─'.repeat(60));
     freeModels.forEach((model, i) => {
@@ -713,11 +703,9 @@ async function configureOpenRouterSuggestions(config: ConfigData) {
       console.log('');
     });
 
-    // Tier-based recommendations - FREE and CHEAP for each tier
-    console.log('🎯 **Recomendações por Tier:**');
+    console.log('**Recomendações por Tier:**');
     console.log('─'.repeat(60));
 
-    // Basic tier - simplest free and cheapest paid
     console.log('🥉 **BASIC TIER:**');
     if (freeModels.length > 0) {
       const basicFree = freeModels.find(m => 
@@ -742,7 +730,6 @@ async function configureOpenRouterSuggestions(config: ConfigData) {
     }
     console.log('');
 
-    // Default tier - balanced free and mid-range paid
     console.log('🥈 **DEFAULT TIER:**');
     if (freeModels.length > 1) {
       const defaultFree = freeModels.find(m => 
@@ -768,7 +755,6 @@ async function configureOpenRouterSuggestions(config: ConfigData) {
     }
     console.log('');
 
-    // Premium tier - best free and quality paid
     console.log('🥇 **PREMIUM TIER:**');
     if (freeModels.length > 0) {
       const premiumFree = freeModels.find(m => 
@@ -796,20 +782,19 @@ async function configureOpenRouterSuggestions(config: ConfigData) {
     }
     console.log('');
 
-    // Ask if user wants to apply these configurations
-    console.log('⚙️ **Aplicar configurações recomendadas?**');
+    console.log('**Aplicar configurações recomendadas?**');
     const apply = await promptUser('Deseja aplicar as configurações OpenRouter automaticamente? (s/n): ');
     
     if (apply.toLowerCase() === 's' || apply.toLowerCase() === 'sim') {
       await applyOpenRouterConfiguration(config, freeModels, cheapModels);
     } else {
-      console.log('💡 Você pode copiar os IDs dos modelos acima para configurar manualmente.');
+      console.log('Você pode copiar os IDs dos modelos acima para configurar manualmente.');
     }
 
   } catch (error) {
-    console.log('❌ Erro ao buscar modelos da OpenRouter:', error instanceof Error ? error.message : error);
+    console.log('Erro ao buscar modelos da OpenRouter:', error instanceof Error ? error.message : error);
     console.log('');
-    console.log('💡 **Modelos OpenRouter recomendados (fallback):**');
+    console.log('**Modelos OpenRouter recomendados (fallback):**');
     console.log('🆓 Free: meta-llama/llama-3.2-3b-instruct:free');
     console.log('💵 Barato: meta-llama/llama-3.2-1b-instruct');
     console.log('🥇 Premium: anthropic/claude-3-haiku');
@@ -822,24 +807,21 @@ async function applyOpenRouterConfiguration(
   cheapModels: OpenRouterModel[]
 ) {
   console.log('');
-  console.log('🔧 **Aplicando configuração OpenRouter...**');
+  console.log('**Aplicando configuração OpenRouter...**');
 
-  // Ensure config structure exists
   if (!config.llm) config.llm = {};
   if (!config.llm.providers) config.llm.providers = {};
   if (!config.llm.tiers) config.llm.tiers = {};
 
-  // Add OpenRouter provider
   config.llm.providers.openrouter = {
     apiKeyEnv: 'OPENROUTER_API_KEY',
     endpoint: 'https://openrouter.ai/api/v1/chat/completions',
     models: []
   };
 
-  console.log('🎯 **Configurando tiers com opções FREE e PAGAS:**');
+  console.log('**Configurando tiers com opções FREE e PAGAS:**');
   console.log('');
 
-  // Basic tier configurations
   const basicFree = freeModels.find(m => 
     m.context_length && m.context_length < 50000
   ) || freeModels[freeModels.length - 1];
@@ -865,7 +847,6 @@ async function applyOpenRouterConfiguration(
     console.log(`🥉 Basic PAID: ${basicPaid.name}`);
   }
 
-  // Default tier configurations
   const defaultFree = freeModels.find(m => 
     m.context_length && m.context_length > 50000 && m.context_length < 200000
   ) || freeModels[1];
@@ -892,7 +873,6 @@ async function applyOpenRouterConfiguration(
     console.log(`🥈 Default PAID: ${defaultPaid.name}`);
   }
 
-  // Premium tier configurations
   const premiumFree = freeModels.find(m => 
     m.context_length && m.context_length > 100000
   ) || freeModels[0];
@@ -922,7 +902,7 @@ async function applyOpenRouterConfiguration(
   }
 
   console.log('');
-  console.log('📋 **Tiers configurados:**');
+  console.log('**Tiers configurados:**');
   console.log('   • basic (gratuito)');
   console.log('   • basic-paid (pago barato)');
   console.log('   • default (gratuito)');
@@ -930,57 +910,26 @@ async function applyOpenRouterConfiguration(
   console.log('   • premium (gratuito)');
   console.log('   • premium-paid (pago barato)');
   console.log('');
-  console.log('🔑 **Próximo passo:**');
+  console.log('**Próximo passo:**');
   console.log('1. Crie uma conta em https://openrouter.ai');
   console.log('2. Gere uma API key');
   console.log('3. Adicione OPENROUTER_API_KEY=sua_chave_aqui no arquivo .clia/.env');
   console.log('');
-  console.log('✅ Configuração OpenRouter aplicada com sucesso!');
+  console.log('Configuração OpenRouter aplicada com sucesso!');
 }
 
-/**
- * Comando CONFIGURE v4.0.0 - Configuração Avançada de Provedores
- * 
- * Sistema interativo para configuração de provedores LLM, embedding e
- * atribuição de tiers. Oferece interface amigável para gerenciamento
- * completo da configuração CLIA.
- * 
- * Features v4.0.0:
- * - 🎛️ Interface de configuração interativa aprimorada
- * - 🔧 Suporte para múltiplos provedores (OpenAI, Anthropic, DeepSeek, Ollama)
- * - ⚙️ Configuração de tiers com validação automática
- * - 📊 Visualização clara da configuração atual
- * - 🛡️ Validação de chaves API e conectividade
- * - 💾 Backup automático antes de alterações
- * 
- * @since v4.0.0 Enhanced interactive configuration
- */
 export function configureCommand() {
   const cmd = new Command('configure');
   
   cmd
-    .description(`
-🎛️ Configuração de Provedores v4.0.0
-
-Interface interativa para configurar provedores LLM, embedding e tiers.
-Gerencia chaves API, endpoints e atribuições de modelos.
-
-Recursos:
-  • Configuração guiada de provedores
-  • Validação automática de conectividade  
-  • Backup de configurações existentes
-  • Visualização clara da configuração atual
-
-Exemplos:
-  clia configure              # Interface interativa
-  clia configure --backup     # Criar backup antes de configurar`)
-    .option('--backup', '💾 Criar backup da configuração atual antes de modificar')
-    .option('--verbose', '📊 Mostrar detalhes avançados da configuração')
+    .description('Interactive LLM provider configuration v1.0.0')
+    .option('--backup', 'Criar backup da configuração atual antes de modificar')
+    .option('--verbose', 'Mostrar detalhes avançados da configuração')
     .action(async (options) => {
       try {
         await runConfigureCommand(options);
       } catch (error) {
-        console.log('❌ Erro na configuração:', error);
+        console.log('Erro na configuração:', error);
         process.exit(1);
       }
     });
