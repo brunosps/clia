@@ -59,19 +59,7 @@ export async function execPrompt<PC extends PromptVariables, T>(
 
       logger.debug(`[execPrompt] Response looks valid, attempting to parse...`);
       
-      // Debug especial para commit/split-grouping
-      if (promptName.includes('commit/split-grouping')) {
-        console.log(`[COMMIT DEBUG] Raw LLM response for split-grouping:`, response);
-        logger.error(`[COMMIT DEBUG] Raw LLM response for split-grouping: ${response}`);
-      }
-      
       parsed = parseJSONResponse(response, promptName) as T;
-      
-      // Debug adicional para commit/split-grouping 
-      if (promptName.includes('commit/split-grouping') && parsed) {
-        console.log(`[COMMIT DEBUG] Parsed response structure:`, JSON.stringify(parsed, null, 2));
-        logger.error(`[COMMIT DEBUG] Parsed response structure: ${JSON.stringify(parsed, null, 2)}`);
-      }
       
       if (parsed) {
         logger.debug(
