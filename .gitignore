@@ -80,3 +80,9 @@ jspm_packages/
 # Temporary folders
 tmp/
 temp/
+.env
+.env.local
+.env.production
+.env
+.env.local
+.env.production
